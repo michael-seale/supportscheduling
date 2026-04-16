@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Team Scheduler</title>
+
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React + ReactDOM (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone for in-browser JSX compilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    html, body, #root { height: 100%; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const ROLES = [
+  { id: "chat",  label: "Chat",  color: "bg-blue-100 text-blue-800 border-blue-300" },
+  { id: "phone", label: "Phone", color: "bg-purple-100 text-purple-800 border-purple-300" },
+  { id: "email", label: "Email", color: "bg-amber-100 text-amber-800 border-amber-300" },
+];
+const ROLE_BY_ID = Object.fromEntries(ROLES.map(r => [r.id, r]));
+
+const DAYS = [
+  { id: "mon", label: "Monday" },
+  { id: "tue", label: "Tuesday" },
+  { id: "wed", label: "Wednesday" },
+  { id: "thu", label: "Thursday" },
+  { id: "fri", label: "Friday" },
+];
+
+const HOURS = Array.from({ length: 12 }, (_, i) => 8 + i);
+
+const NEEDS = {
+  8:  { chat: 0, phone: 0, email: 5 },
+  9:  { chat: 2, phone: 1, email: 2 },
+  10: { chat: 3, phone: 2, email: 1 },
+  11: { chat: 3, phone: 2, email: 1 },
+  12: { chat: 3, phone: 2, email: 1 },
+  13: { chat: 3, phone: 2, email: 1 },
+  14: { chat: 3, phone: 2, email: 1 },
+  15: { chat: 3, phone: 2, email: 1 },
+  16: { chat: 3, phone: 1, email: 1 },
+  17: { chat: 0, phone: 0, email: 1 },
+  18: { chat: 0, phone: 0, email: 1 },
+  19: { chat: 0, phone: 0, email: 1 },
+};
+
+const LS_KEYS = {
+  users: "sched.users.v1",
+  schedule: "sched.schedule.v1",
+  session: "sched.session.v1",
+};
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) { return fallback; }
+}
+function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+function seedIfEmpty() {
+  const users = loadJSON(LS_KEYS.users, null);
+  if (!users) {
+    saveJSON(LS_KEYS.users, [
+      { username: "admin", password: "admin123", role: "admin", displayName: "Admin" },
+    ]);
+  }
+  if (loadJSON(LS_KEYS.schedule, null) == null) saveJSON(LS_KEYS.schedule, {});
+}
+
+function formatHour(h) {
+  const suffix = h >= 12 ? "pm" : "am";
+  const disp = ((h + 11) % 12) + 1;
+  return `${disp}${suffix}`;
+}
+function hourRangeLabel(h) { return `${formatHour(h)}–${formatHour(h + 1)}`; }
+
+function useLocalState(key, fallback) {
+  const [val, setVal] = useState(() => loadJSON(key, fallback));
+  useEffect(() => { saveJSON(key, val); }, [key, val]);
+  return [val, setVal];
+}
+
+function getCellAssignments(schedule, dayId, hour) {
+  return (schedule && schedule[dayId] && schedule[dayId][hour]) ? schedule[dayId][hour] : [];
+}
+function setCellAssignments(schedule, dayId, hour, assignments) {
+  const next = { ...schedule };
+  next[dayId] = { ...(next[dayId] || {}) };
+  if (assignments.length === 0) delete next[dayId][hour];
+  else next[dayId][hour] = assignments;
+  if (Object.keys(next[dayId]).length === 0) delete next[dayId];
+  return next;
+}
+
+function LoginView({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  function submit(e) {
+    e.preventDefault();
+    const users = loadJSON(LS_KEYS.users, []);
+    const u = users.find(x =>
+      x.username.toLowerCase() === username.trim().toLowerCase() &&
+      x.password === password
+    );
+    if (!u) { setError("Invalid username or password."); return; }
+    const session = { username: u.username, role: u.role };
+    saveJSON(LS_KEYS.session, session);
+    onLogin(session);
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <form onSubmit={submit} className="bg-white shadow-md rounded-xl p-8 w-full max-w-sm border border-slate-200">
+        <h1 className="text-2xl font-semibold text-slate-800 mb-1">Team Scheduler</h1>
+        <p className="text-sm text-slate-500 mb-6">Sign in to continue</p>
+        <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
+        <input autoFocus value={username} onChange={e => setUsername(e.target.value)}
+          className="w-full border border-slate-300 rounded-md px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+        <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+          className="w-full border border-slate-300 rounded-md px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+        {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
+        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-md">
+          Sign in
+        </button>
+        <div className="mt-6 text-xs text-slate-500 leading-relaxed">
+          Default admin: <span className="font-mono">admin</span> / <span className="font-mono">admin123</span>.
+          Change the password and add employees once logged in.
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ScheduleGrid({ schedule, setSchedule, employees }) {
+  const [editing, setEditing] = useState(null);
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="grid" style={{ gridTemplateColumns: "90px repeat(5, minmax(0, 1fr))" }}>
+        <div className="bg-slate-100 border-b border-slate-200 p-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">Time (ET)</div>
+        {DAYS.map(d => (
+          <div key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</div>
+        ))}
+        {HOURS.map(h => (
+          <React.Fragment key={h}>
+            <div className="border-b border-slate-200 p-2 text-xs text-slate-500 bg-slate-50 flex items-start">{hourRangeLabel(h)}</div>
+            {DAYS.map(d => (
+              <ScheduleCell key={`${d.id}-${h}`} dayId={d.id} hour={h}
+                assignments={getCellAssignments(schedule, d.id, h)}
+                onEdit={() => setEditing({ dayId: d.id, hour: h })} />
+            ))}
+          </React.Fragment>
+        ))}
+      </div>
+      {editing && (
+        <AssignModal dayId={editing.dayId} hour={editing.hour} schedule={schedule} employees={employees}
+          onClose={() => setEditing(null)}
+          onSave={(assignments) => {
+            setSchedule(setCellAssignments(schedule, editing.dayId, editing.hour, assignments));
+            setEditing(null);
+          }} />
+      )}
+    </div>
+  );
+}
+
+function ScheduleCell({ dayId, hour, assignments, onEdit }) {
+  const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
+  const assigned = { chat: 0, phone: 0, email: 0 };
+  assignments.forEach(a => { assigned[a.role] = (assigned[a.role] || 0) + 1; });
+  const hasAnyNeed = ROLES.some(r => needs[r.id] > 0);
+  const hasAssignments = assignments.length > 0;
+  return (
+    <div onClick={onEdit} className="border-b border-l border-slate-200 p-2 text-xs min-h-[72px] cursor-pointer hover:bg-slate-50 transition">
+      {hasAssignments && (
+        <div className="flex flex-col gap-1 mb-1">
+          {assignments.map((a, i) => (
+            <div key={i} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] ${(ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].color) || ""}`}>
+              <span className="font-medium">{a.username}</span>
+              <span className="opacity-70">· {ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {hasAnyNeed && (
+        <div className="flex flex-col gap-0.5">
+          {ROLES.map(r => {
+            const need = needs[r.id];
+            if (!need) return null;
+            const have = assigned[r.id] || 0;
+            const filled = have >= need;
+            return (
+              <div key={r.id} className={`text-[11px] ${filled ? "text-green-700" : "text-slate-500"}`} title={`${have}/${need} ${r.label}`}>
+                {filled ? "✓" : "•"} {have}/{need} {r.label}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!hasAnyNeed && !hasAssignments && (
+        <div className="text-[11px] text-slate-300 italic">No needs</div>
+      )}
+    </div>
+  );
+}
+
+function AssignModal({ dayId, hour, schedule, employees, onClose, onSave }) {
+  const existing = getCellAssignments(schedule, dayId, hour);
+  const [draft, setDraft] = useState(existing);
+  const [newUsername, setNewUsername] = useState(employees[0] ? employees[0].username : "");
+  const [newRole, setNewRole] = useState("chat");
+  const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
+  const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
+  const assigned = { chat: 0, phone: 0, email: 0 };
+  draft.forEach(a => { assigned[a.role] = (assigned[a.role] || 0) + 1; });
+
+  function addAssignment() {
+    if (!newUsername) return;
+    if (draft.some(a => a.username === newUsername)) return;
+    setDraft([...draft, { username: newUsername, role: newRole }]);
+  }
+  function removeAssignment(idx) { setDraft(draft.filter((_, i) => i !== idx)); }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+        <h3 className="text-lg font-semibold text-slate-800">{dayLabel} · {hourRangeLabel(hour)} ET</h3>
+        <p className="text-sm text-slate-500 mb-4">Assign employees to this hour.</p>
+
+        <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mb-4">
+          <div className="text-xs font-semibold text-slate-600 uppercase mb-1">Coverage needs</div>
+          <div className="flex flex-wrap gap-2">
+            {ROLES.map(r => {
+              const need = needs[r.id];
+              if (!need) return null;
+              const have = assigned[r.id] || 0;
+              const ok = have >= need;
+              return (
+                <span key={r.id} className={`text-xs px-2 py-0.5 rounded-full border ${ok ? "bg-green-50 border-green-300 text-green-700" : "bg-white border-slate-300 text-slate-600"}`}>
+                  {r.label}: {have}/{need}
+                </span>
+              );
+            })}
+            {!ROLES.some(r => needs[r.id] > 0) && (
+              <span className="text-xs text-slate-500">No required coverage this hour.</span>
+            )}
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-semibold text-slate-600 uppercase mb-2">Assigned</div>
+          {draft.length === 0 && <div className="text-sm text-slate-400 italic">No one assigned.</div>}
+          <div className="flex flex-col gap-1">
+            {draft.map((a, i) => (
+              <div key={i} className="flex items-center justify-between bg-slate-50 rounded-md px-3 py-1.5">
+                <div className="text-sm">
+                  <span className="font-medium">{a.username}</span>
+                  <span className="text-slate-500"> · {ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].label}</span>
+                </div>
+                <button onClick={() => removeAssignment(i)} className="text-xs text-red-600 hover:text-red-800">Remove</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {employees.length === 0 ? (
+          <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3 mb-4">
+            No employees yet. Add them on the Employees tab.
+          </div>
+        ) : (
+          <div className="flex gap-2 mb-4">
+            <select value={newUsername} onChange={e => setNewUsername(e.target.value)}
+              className="flex-1 border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+              {employees.map(emp => (
+                <option key={emp.username} value={emp.username}>{emp.displayName || emp.username}</option>
+              ))}
+            </select>
+            <select value={newRole} onChange={e => setNewRole(e.target.value)}
+              className="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+              {ROLES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+            <button onClick={addAssignment}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm font-medium">Add</button>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">Cancel</button>
+          <button onClick={() => onSave(draft)}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmployeesTab({ users, setUsers }) {
+  const employees = users.filter(u => u.role === "employee");
+  const [form, setForm] = useState({ username: "", displayName: "", password: "" });
+  const [error, setError] = useState("");
+
+  function addEmployee(e) {
+    e.preventDefault(); setError("");
+    const username = form.username.trim().toLowerCase();
+    if (!username || !form.password) { setError("Username and password are required."); return; }
+    if (users.some(u => u.username.toLowerCase() === username)) { setError("That username already exists."); return; }
+    setUsers([...users, { username, password: form.password, role: "employee",
+      displayName: form.displayName.trim() || username }]);
+    setForm({ username: "", displayName: "", password: "" });
+  }
+  function removeEmployee(username) {
+    if (!confirm(`Remove employee "${username}"?`)) return;
+    setUsers(users.filter(u => u.username !== username));
+  }
+  function resetPassword(username) {
+    const pwd = prompt(`New password for ${username}:`);
+    if (!pwd) return;
+    setUsers(users.map(u => u.username === username ? { ...u, password: pwd } : u));
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white border border-slate-200 rounded-xl p-6">
+        <h3 className="text-md font-semibold text-slate-800 mb-4">Add employee</h3>
+        <form onSubmit={addEmployee} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <input placeholder="Username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })}
+            className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
+          <input placeholder="Display name (optional)" value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })}
+            className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
+          <input placeholder="Password" type="text" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}
+            className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
+          <button className="bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium px-4">Add</button>
+        </form>
+        {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+          <h3 className="text-md font-semibold text-slate-800">Employees ({employees.length})</h3>
+        </div>
+        {employees.length === 0 ? (
+          <div className="p-6 text-sm text-slate-500 italic">No employees yet.</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-slate-600 text-xs uppercase">
+              <tr>
+                <th className="px-4 py-2">Username</th>
+                <th className="px-4 py-2">Display name</th>
+                <th className="px-4 py-2">Password</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map(emp => (
+                <tr key={emp.username} className="border-t border-slate-100">
+                  <td className="px-4 py-2 font-mono text-slate-700">{emp.username}</td>
+                  <td className="px-4 py-2 text-slate-700">{emp.displayName}</td>
+                  <td className="px-4 py-2 font-mono text-slate-400">••••••••</td>
+                  <td className="px-4 py-2 text-right space-x-3">
+                    <button onClick={() => resetPassword(emp.username)} className="text-blue-600 hover:text-blue-800 text-xs">Reset password</button>
+                    <button onClick={() => removeEmployee(emp.username)} className="text-red-600 hover:text-red-800 text-xs">Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, children }) {
+  return (
+    <button onClick={onClick}
+      className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+        active ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:text-slate-700"
+      }`}>{children}</button>
+  );
+}
+
+function TopBar({ session, onLogout, title }) {
+  return (
+    <div className="bg-white border-b border-slate-200">
+      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div className="text-lg font-semibold text-slate-800">{title}</div>
+        <div className="text-sm text-slate-600 flex items-center gap-3">
+          <span>Signed in as <span className="font-medium">{session.username}</span></span>
+          <button onClick={onLogout} className="text-sm text-blue-600 hover:text-blue-800">Sign out</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminApp({ session, onLogout }) {
+  const [users, setUsers] = useLocalState(LS_KEYS.users, []);
+  const [schedule, setSchedule] = useLocalState(LS_KEYS.schedule, {});
+  const [tab, setTab] = useState("schedule");
+  const employees = useMemo(() => users.filter(u => u.role === "employee"), [users]);
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <TopBar session={session} onLogout={onLogout} title="Scheduler — Admin" />
+      <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="flex gap-1 mb-4 border-b border-slate-200">
+          <TabButton active={tab === "schedule"} onClick={() => setTab("schedule")}>Schedule</TabButton>
+          <TabButton active={tab === "employees"} onClick={() => setTab("employees")}>Employees</TabButton>
+        </div>
+        {tab === "schedule" && (
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm text-slate-600">Click any cell to assign employees. Monday–Friday, 8am–8pm ET.</div>
+              <div className="text-xs text-slate-500">{Object.keys(schedule).length === 0 ? "Showing coverage needs" : ""}</div>
+            </div>
+            <ScheduleGrid schedule={schedule} setSchedule={setSchedule} employees={employees} />
+          </div>
+        )}
+        {tab === "employees" && <EmployeesTab users={users} setUsers={setUsers} />}
+      </div>
+    </div>
+  );
+}
+
+function EmployeeGrid({ schedule, username }) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="grid" style={{ gridTemplateColumns: "90px repeat(5, minmax(0, 1fr))" }}>
+        <div className="bg-slate-100 border-b border-slate-200 p-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">Time (ET)</div>
+        {DAYS.map(d => (
+          <div key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</div>
+        ))}
+        {HOURS.map(h => (
+          <React.Fragment key={h}>
+            <div className="border-b border-slate-200 p-2 text-xs text-slate-500 bg-slate-50 flex items-start">{hourRangeLabel(h)}</div>
+            {DAYS.map(d => {
+              const mine = getCellAssignments(schedule, d.id, h).filter(a => a.username.toLowerCase() === username.toLowerCase());
+              return (
+                <div key={`${d.id}-${h}`} className="border-b border-l border-slate-200 p-2 min-h-[60px]">
+                  {mine.map((a, i) => (
+                    <div key={i} className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].color}`}>
+                      {ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].label}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EmployeeApp({ session, onLogout }) {
+  const [schedule] = useLocalState(LS_KEYS.schedule, {});
+  const myShifts = useMemo(() => {
+    const rows = [];
+    DAYS.forEach(d => {
+      HOURS.forEach(h => {
+        const assigns = getCellAssignments(schedule, d.id, h);
+        assigns.filter(a => a.username.toLowerCase() === session.username.toLowerCase())
+          .forEach(a => rows.push({ day: d, hour: h, role: a.role }));
+      });
+    });
+    return rows;
+  }, [schedule, session.username]);
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <TopBar session={session} onLogout={onLogout} title="My Schedule" />
+      <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="mb-4 flex items-end justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-800">This week</h2>
+            <p className="text-sm text-slate-500">Monday–Friday, 8am–8pm ET · times shown in Eastern Time</p>
+          </div>
+          <div className="text-sm text-slate-600">{myShifts.length} shift{myShifts.length === 1 ? "" : "s"} assigned</div>
+        </div>
+        <EmployeeGrid schedule={schedule} username={session.username} />
+        <div className="mt-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="p-4 border-b border-slate-200 text-sm font-semibold text-slate-800">Shift list</div>
+          {myShifts.length === 0 ? (
+            <div className="p-6 text-sm text-slate-500 italic">No shifts scheduled yet.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left text-slate-600 text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-2">Day</th>
+                  <th className="px-4 py-2">Time (ET)</th>
+                  <th className="px-4 py-2">Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {myShifts.map((s, i) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-4 py-2 text-slate-700">{s.day.label}</td>
+                    <td className="px-4 py-2 text-slate-700">{hourRangeLabel(s.hour)}</td>
+                    <td className="px-4 py-2">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${ROLE_BY_ID[s.role] && ROLE_BY_ID[s.role].color}`}>
+                        {ROLE_BY_ID[s.role] && ROLE_BY_ID[s.role].label}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [session, setSession] = useState(() => loadJSON(LS_KEYS.session, null));
+  useEffect(() => { seedIfEmpty(); }, []);
+  function handleLogout() { localStorage.removeItem(LS_KEYS.session); setSession(null); }
+  if (!session) return <LoginView onLogin={setSession} />;
+  if (session.role === "admin") return <AdminApp session={session} onLogout={handleLogout} />;
+  return <EmployeeApp session={session} onLogout={handleLogout} />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+  </script>
+</body>
+</html>
