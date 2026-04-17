@@ -71,6 +71,22 @@ const DAYS = [
 
 const HOURS = Array.from({ length: 12 }, (_, i) => 8 + i);
 
+const SHIFTS = [
+  { id: "eastern",  label: "Eastern",  startHour: 8,  endHour: 16 }, // 8am-5pm
+  { id: "central",  label: "Central",  startHour: 9,  endHour: 17 }, // 9am-6pm
+  { id: "mountain", label: "Mountain", startHour: 10, endHour: 18 }, // 10am-7pm
+  { id: "pacific",  label: "Pacific",  startHour: 11, endHour: 19 }, // 11am-8pm
+];
+const SHIFT_BY_ID = Object.fromEntries(SHIFTS.map(s => [s.id, s]));
+const DEFAULT_SHIFT_ID = "eastern";
+function getShiftOf(user) {
+  return (user && user.shift && SHIFT_BY_ID[user.shift]) ? user.shift : DEFAULT_SHIFT_ID;
+}
+function isHourInShift(shiftId, hour) {
+  const s = SHIFT_BY_ID[shiftId || DEFAULT_SHIFT_ID] || SHIFT_BY_ID[DEFAULT_SHIFT_ID];
+  return hour >= s.startHour && hour <= s.endHour;
+}
+
 const NEEDS = {
   8:  { chat: 0, phone: 0, email: 5 },
   9:  { chat: 2, phone: 1, email: 2 },
@@ -297,19 +313,30 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
   }
 
   // Build an array of runs for a given employee across the day's HOURS.
-  // Consecutive hours with the same truthy role merge into a single run.
-  // Empty hours (role === "") always stay as their own single-hour run.
-  function getRunsForEmployee(username) {
+  // Consecutive hours with the same truthy role merge into a single "assigned"
+  // run; consecutive off-shift hours merge into a single "off" run; empty
+  // in-shift hours stay as their own single-hour run so they're clickable.
+  function getRunsForEmployee(username, shiftId) {
     const runs = [];
     let current = null;
     HOURS.forEach(h => {
+      const inShift = isHourInShift(shiftId, h);
+      if (!inShift) {
+        if (current && current.type === "off" && current.endHour === h - 1) {
+          current.endHour = h;
+        } else {
+          current = { type: "off", startHour: h, endHour: h, role: "" };
+          runs.push(current);
+        }
+        return;
+      }
       const assigns = getCellAssignments(schedule, dayId, h);
       const mine = assigns.find(a => a.username === username);
       const role = mine ? mine.role : "";
-      if (role && current && current.role === role && current.endHour === h - 1) {
+      if (role && current && current.type === "assigned" && current.role === role && current.endHour === h - 1) {
         current.endHour = h;
       } else {
-        current = { startHour: h, endHour: h, role };
+        current = { type: "assigned", startHour: h, endHour: h, role };
         runs.push(current);
         if (!role) current = null; // don't merge empty cells
       }
@@ -409,7 +436,9 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
             </thead>
             <tbody>
               {employees.map(emp => {
-                const runs = getRunsForEmployee(emp.username);
+                const shiftId = getShiftOf(emp);
+                const runs = getRunsForEmployee(emp.username, shiftId);
+                const shiftLabel = (SHIFT_BY_ID[shiftId] || {}).label || "";
                 return (
                   <tr key={emp.username} className="border-t border-slate-200">
                     <td className="p-2 bg-white border-r border-slate-200 font-medium text-slate-700 sticky left-0 z-10 whitespace-nowrap">
@@ -417,9 +446,22 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                       {emp.role === "admin" && (
                         <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
                       )}
+                      <span className="ml-2 text-[10px] uppercase text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5">{shiftLabel}</span>
                     </td>
                     {runs.map(run => {
                       const span = run.endHour - run.startHour + 1;
+                      if (run.type === "off") {
+                        return (
+                          <td
+                            key={run.startHour}
+                            colSpan={span}
+                            className="p-1 border-l border-slate-200 bg-slate-100 align-middle"
+                            title={`Off shift — ${shiftLabel} (${formatHour(SHIFT_BY_ID[shiftId].startHour)}–${formatHour(SHIFT_BY_ID[shiftId].endHour + 1)})`}
+                          >
+                            <div className="text-center text-[11px] text-slate-400 italic select-none">Off</div>
+                          </td>
+                        );
+                      }
                       const role = run.role;
                       const roleObj = role ? ROLE_BY_ID[role] : null;
                       const isMulti = span > 1;
@@ -594,20 +636,27 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
             {employees.map(emp => {
               const busyOn = otherRole[emp.username];
               const isBusy = !!busyOn;
+              const empShift = getShiftOf(emp);
+              const offShift = !isHourInShift(empShift, hour);
+              const isDisabled = isBusy || offShift;
               const isSelected = selected.has(emp.username);
               const busyLabel = isBusy && ((ROLE_BY_ID[busyOn] || {}).label || busyOn);
+              const shiftLabel = (SHIFT_BY_ID[empShift] || {}).label || "";
+              let note = null;
+              if (isBusy) note = `Already on ${busyLabel} this hour`;
+              else if (offShift) note = `Off shift (${shiftLabel})`;
               return (
                 <label
                   key={emp.username}
                   className={`flex items-center gap-3 px-3 py-2 border-b last:border-b-0 border-slate-100 ${
-                    isBusy ? "opacity-60 cursor-not-allowed bg-slate-50" : "cursor-pointer hover:bg-slate-50"
+                    isDisabled ? "opacity-60 cursor-not-allowed bg-slate-50" : "cursor-pointer hover:bg-slate-50"
                   }`}
                 >
                   <input
                     type="checkbox"
-                    disabled={isBusy}
+                    disabled={isDisabled}
                     checked={isSelected}
-                    onChange={() => !isBusy && toggle(emp.username)}
+                    onChange={() => !isDisabled && toggle(emp.username)}
                     className="w-4 h-4"
                   />
                   <div className="flex-1 min-w-0">
@@ -616,9 +665,10 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
                       {emp.role === "admin" && (
                         <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
                       )}
+                      <span className="ml-2 text-[10px] uppercase text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5">{shiftLabel}</span>
                     </div>
-                    {isBusy && (
-                      <div className="text-xs text-slate-500">Already on {busyLabel} this hour</div>
+                    {note && (
+                      <div className="text-xs text-slate-500">{note}</div>
                     )}
                   </div>
                 </label>
@@ -638,7 +688,7 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
 }
 
 function EmployeesTab({ users, setUsers, currentUsername }) {
-  const [form, setForm] = useState({ username: "", displayName: "", password: "", role: "employee" });
+  const [form, setForm] = useState({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
   const [error, setError] = useState("");
 
   function addUser(e) {
@@ -651,8 +701,9 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
       password: form.password,
       role: form.role,
       displayName: form.displayName.trim() || username,
+      shift: form.shift,
     }]);
-    setForm({ username: "", displayName: "", password: "", role: "employee" });
+    setForm({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
   }
 
   function removeUser(username) {
@@ -678,13 +729,17 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
     setUsers(users.map(u => u.username === username ? { ...u, role: newRole } : u));
   }
 
+  function changeShift(username, newShift) {
+    setUsers(users.map(u => u.username === username ? { ...u, shift: newShift } : u));
+  }
+
   const adminCount = users.filter(u => u.role === "admin").length;
 
   return (
     <div className="space-y-6">
       <div className="bg-white border border-slate-200 rounded-xl p-6">
         <h3 className="text-md font-semibold text-slate-800 mb-4">Add user</h3>
-        <form onSubmit={addUser} className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+        <form onSubmit={addUser} className="grid grid-cols-1 sm:grid-cols-6 gap-3">
           <input placeholder="Username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })}
             className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
           <input placeholder="Display name (optional)" value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })}
@@ -695,6 +750,10 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
             className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white">
             <option value="employee">Employee</option>
             <option value="admin">Admin</option>
+          </select>
+          <select value={form.shift} onChange={e => setForm({ ...form, shift: e.target.value })}
+            className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white">
+            {SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
           </select>
           <button className="bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium px-4">Add</button>
         </form>
@@ -714,6 +773,7 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
                 <th className="px-4 py-2">Username</th>
                 <th className="px-4 py-2">Display name</th>
                 <th className="px-4 py-2">Role</th>
+                <th className="px-4 py-2">Shift</th>
                 <th className="px-4 py-2">Password</th>
                 <th className="px-4 py-2"></th>
               </tr>
@@ -743,6 +803,15 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
                       >
                         <option value="employee">Employee</option>
                         <option value="admin">Admin</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <select
+                        value={getShiftOf(u)}
+                        onChange={e => changeShift(u.username, e.target.value)}
+                        className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white text-slate-700"
+                      >
+                        {SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                       </select>
                     </td>
                     <td className="px-4 py-2 font-mono text-slate-400">••••••••</td>
