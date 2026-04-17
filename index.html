@@ -28,24 +28,37 @@ const { useState, useEffect, useMemo } = React;
 
 const ROLES = [
   {
-    id: "chat",  label: "Chat",
+    id: "chat",  label: "Chat", isCoverage: true,
     color: "bg-orange-100 text-orange-800 border-orange-300",
     solid: "bg-orange-500 text-white border-orange-600",
     light: "bg-orange-50 text-orange-700 border-orange-300",
   },
   {
-    id: "phone", label: "Phone",
+    id: "phone", label: "Phone", isCoverage: true,
     color: "bg-blue-100 text-blue-800 border-blue-300",
     solid: "bg-blue-600 text-white border-blue-700",
     light: "bg-blue-50 text-blue-700 border-blue-300",
   },
   {
-    id: "email", label: "Email",
+    id: "email", label: "Email", isCoverage: true,
     color: "bg-green-100 text-green-800 border-green-300",
     solid: "bg-green-600 text-white border-green-700",
     light: "bg-green-50 text-green-700 border-green-300",
   },
+  {
+    id: "lunch", label: "Lunch", isCoverage: false,
+    color: "bg-purple-100 text-purple-800 border-purple-300",
+    solid: "bg-purple-600 text-white border-purple-700",
+    light: "bg-purple-50 text-purple-700 border-purple-300",
+  },
+  {
+    id: "meeting", label: "Meeting", isCoverage: false,
+    color: "bg-red-100 text-red-800 border-red-300",
+    solid: "bg-red-600 text-white border-red-700",
+    light: "bg-red-50 text-red-700 border-red-300",
+  },
 ];
+const COVERAGE_ROLES = ROLES.filter(r => r.isCoverage);
 const ROLE_BY_ID = Object.fromEntries(ROLES.map(r => [r.id, r]));
 
 const DAYS = [
@@ -362,12 +375,12 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                 {HOURS.map(h => {
                   const needs = NEEDS[h] || { chat: 0, phone: 0, email: 0 };
                   const assigns = getCellAssignments(schedule, dayId, h);
-                  const counts = { chat: 0, phone: 0, email: 0 };
+                  const counts = {};
                   assigns.forEach(a => { counts[a.role] = (counts[a.role] || 0) + 1; });
                   return (
                     <td key={h} className="bg-slate-50 border-b border-l border-slate-200 p-1 align-top">
                       <div className="flex flex-col gap-1">
-                        {ROLES.map(r => {
+                        {COVERAGE_ROLES.map(r => {
                           const need = needs[r.id] || 0;
                           const have = counts[r.id] || 0;
                           const filled = (need > 0 && have >= need) || (need === 0 && have > 0);
@@ -430,9 +443,9 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                               className={`${selectClass} w-full text-xs rounded ${isMulti ? "px-2 py-1.5" : "px-1 py-1"} cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-400`}
                             >
                               <option value="">—</option>
-                              <option value="chat">Chat</option>
-                              <option value="phone">Phone</option>
-                              <option value="email">Email</option>
+                              {ROLES.map(r => (
+                                <option key={r.id} value={r.id}>{r.label}</option>
+                              ))}
                             </select>
                             {isMulti && roleObj && (
                               <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[10px] uppercase tracking-wide opacity-90">
@@ -471,7 +484,8 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
 
 function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
   const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
-  const assignedByRole = { chat: [], phone: [], email: [] };
+  const assignedByRole = {};
+  ROLES.forEach(r => { assignedByRole[r.id] = []; });
   assignments.forEach(a => {
     if (!assignedByRole[a.role]) assignedByRole[a.role] = [];
     assignedByRole[a.role].push(a.username);
@@ -480,7 +494,7 @@ function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
   return (
     <div className="border-b border-l border-slate-200 p-1.5 min-h-[72px]">
       <div className="flex flex-col gap-1">
-        {ROLES.map(r => {
+        {COVERAGE_ROLES.map(r => {
           const need = needs[r.id] || 0;
           const names = assignedByRole[r.id] || [];
           const have = names.length;
