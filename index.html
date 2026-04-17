@@ -170,8 +170,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -431,8 +431,14 @@ function SharedStateProvider({ children }) {
   }
 
   // Memoize decorated roles (with class strings) so identity is stable unless
-  // the underlying roles array actually changes.
-  const rolesDecorated = useMemo(() => appState.roles.map(decorateRole), [appState.roles]);
+  // the underlying roles array actually changes. Roles are sorted alphabetically
+  // by label so every menu, table, and dropdown shows them in A→Z order.
+  const rolesDecorated = useMemo(() => {
+    return appState.roles
+      .map(decorateRole)
+      .slice()
+      .sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
+  }, [appState.roles]);
   const rolesById = useMemo(() => Object.fromEntries(rolesDecorated.map(r => [r.id, r])), [rolesDecorated]);
   const coverageRoles = useMemo(() => rolesDecorated.filter(r => r.isCoverage), [rolesDecorated]);
 
@@ -564,9 +570,42 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
   const [copyTargets, setCopyTargets] = useState([]); // array of target day IDs
   const [copyNotice, setCopyNotice] = useState(""); // short-lived success message
   const [coverageCollapsed, setCoverageCollapsed] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearTargets, setClearTargets] = useState([]); // array of usernames to clear
 
   function toggleCopyTarget(id) {
     setCopyTargets(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+
+  function toggleClearTarget(username) {
+    setClearTargets(prev => prev.includes(username) ? prev.filter(x => x !== username) : [...prev, username]);
+  }
+
+  // Wipe the current day's assignments for each selected employee.
+  function applyClear() {
+    if (clearTargets.length === 0) return;
+    const lower = new Set(clearTargets.map(u => u.toLowerCase()));
+    setSchedule(prev => {
+      const next = { ...prev };
+      const day = next[dayId];
+      if (!day) return prev;
+      const cleanedDay = {};
+      for (const [h, assigns] of Object.entries(day)) {
+        const kept = (assigns || []).filter(a => !lower.has((a.username || "").toLowerCase()));
+        if (kept.length > 0) cleanedDay[h] = kept;
+      }
+      if (Object.keys(cleanedDay).length === 0) delete next[dayId];
+      else next[dayId] = cleanedDay;
+      return next;
+    });
+    const names = clearTargets.map(un => {
+      const emp = employees.find(e => e.username.toLowerCase() === un.toLowerCase());
+      return emp ? (emp.displayName || emp.username) : un;
+    });
+    setCopyNotice(`Cleared ${dayLabel}'s schedule for ${names.join(", ")}.`);
+    setClearOpen(false);
+    setClearTargets([]);
+    setTimeout(() => setCopyNotice(""), 3500);
   }
 
   // Copy the current day's entire assignments to each selected target day,
@@ -671,9 +710,10 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
             </button>
           ))}
         </div>
+        <div className="flex items-center gap-2">
         <div className="relative">
           <button
-            onClick={() => { setCopyOpen(o => !o); setCopyTargets([]); }}
+            onClick={() => { setCopyOpen(o => !o); setCopyTargets([]); setClearOpen(false); setClearTargets([]); }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
           >
             <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
@@ -728,6 +768,70 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
               </div>
             </div>
           )}
+        </div>
+        <div className="relative">
+          <button
+            onClick={() => { setClearOpen(o => !o); setClearTargets([]); setCopyOpen(false); setCopyTargets([]); }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+              <path fillRule="evenodd" d="M9 2a1 1 0 00-1 1v1H5.5a1 1 0 000 2H6v9a2 2 0 002 2h4a2 2 0 002-2V6h.5a1 1 0 100-2H12V3a1 1 0 00-1-1H9zm-1 4v9h4V6H8zm1 2a.5.5 0 011 0v5a.5.5 0 01-1 0V8zm2 0a.5.5 0 011 0v5a.5.5 0 01-1 0V8z" clipRule="evenodd" />
+            </svg>
+            Clear
+            <svg viewBox="0 0 20 20" fill="currentColor" className={`w-3 h-3 transition-transform ${clearOpen ? "rotate-180" : ""}`}>
+              <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.4a.75.75 0 01-1.08 0l-4.25-4.4a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+            </svg>
+          </button>
+          {clearOpen && (
+            <div className="absolute right-0 top-full mt-2 z-30 w-72 bg-white border border-slate-200 rounded-xl shadow-lg p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                Clear {dayLabel}'s schedule for:
+              </div>
+              {employees.length === 0 ? (
+                <div className="mb-2 text-xs text-slate-500 italic">No employees to clear.</div>
+              ) : (
+                <div className="max-h-64 overflow-y-auto flex flex-col gap-1 mb-3 border border-slate-200 rounded-md p-1">
+                  {employees.map(emp => {
+                    const checked = clearTargets.includes(emp.username);
+                    return (
+                      <label key={emp.username} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleClearTarget(emp.username)}
+                          className="accent-blue-600"
+                        />
+                        <span className="text-sm text-slate-700">{emp.displayName || emp.username}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  onClick={() => setClearTargets(
+                    clearTargets.length === employees.length ? [] : employees.map(e => e.username)
+                  )}
+                  className="text-xs text-blue-600 hover:text-blue-800"
+                  disabled={employees.length === 0}
+                >
+                  {clearTargets.length === employees.length && employees.length > 0 ? "Deselect all" : "Select all"}
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setClearOpen(false); setClearTargets([]); }}
+                    className="px-3 py-1 text-sm rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50"
+                  >Cancel</button>
+                  <button
+                    disabled={clearTargets.length === 0}
+                    onClick={applyClear}
+                    className="px-3 py-1 text-sm rounded-md bg-red-600 text-white font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >Clear</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         </div>
       </div>
       {copyNotice && (
@@ -1154,7 +1258,7 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
               </tr>
             </thead>
             <tbody>
-              {users.map(u => {
+              {sortEmployeesByFirstName(users).map(u => {
                 const isSelf = u.username.toLowerCase() === currentUsername.toLowerCase();
                 const isLastAdmin = u.role === "admin" && adminCount === 1;
                 return (
@@ -1332,6 +1436,16 @@ function scheduleWithoutRole(schedule, roleId) {
 
 function capitalize(s) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+// Sort employees alphabetically by first name (the leading token of their
+// display name, falling back to username). Returns a new array — never mutates.
+function sortEmployeesByFirstName(list) {
+  return [...list].sort((a, b) => {
+    const nameA = ((a.displayName || a.username || "").trim().split(/\s+/)[0] || "").toLowerCase();
+    const nameB = ((b.displayName || b.username || "").trim().split(/\s+/)[0] || "").toLowerCase();
+    return nameA.localeCompare(nameB);
+  });
 }
 
 // Dropdown color picker with a swatch preview so you can still see the color
@@ -1731,7 +1845,7 @@ function ReportsTab() {
 function AdminApp({ session, onLogout }) {
   const { users, setUsers, schedule: fullSchedule, setSchedule: setFullSchedule } = useShared();
   const [tab, setTab] = useState("schedule");
-  const employees = useMemo(() => users, [users]);
+  const employees = useMemo(() => sortEmployeesByFirstName(users), [users]);
   const [previewUsername, setPreviewUsername] = useState("");
   const [scheduleView, setScheduleView] = useState("day");
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
@@ -2419,6 +2533,7 @@ function EmployeeApp({ session, onLogout }) {
   const [viewerDayId, setViewerDayId] = useState("mon");
   const weekKey = toDateKey(weekStart);
   const schedule = fullSchedule[weekKey] || {};
+  const sortedUsers = useMemo(() => sortEmployeesByFirstName(users), [users]);
   const mySelf = users.find(u => u.username.toLowerCase() === session.username.toLowerCase());
   const myShiftId = getShiftOf(mySelf);
   const myShifts = useMemo(() => {
@@ -2485,8 +2600,8 @@ function EmployeeApp({ session, onLogout }) {
 
         {showEveryone ? (
           viewerView === "week"
-            ? <TeamWeekGrid schedule={schedule} users={users} highlightUsername={session.username} />
-            : <TeamDailyGrid schedule={schedule} users={users} highlightUsername={session.username} />
+            ? <TeamWeekGrid schedule={schedule} users={sortedUsers} highlightUsername={session.username} />
+            : <TeamDailyGrid schedule={schedule} users={sortedUsers} highlightUsername={session.username} />
         ) : (
           viewerView === "week"
             ? <EmployeeGrid schedule={schedule} username={session.username} shiftId={myShiftId} />
