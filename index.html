@@ -3,10 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Team Scheduler</title>
+  <title>RenewedVision Support</title>
 
   <!-- Tailwind CSS (CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Plus Jakarta Sans (brand font for top bar) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
 
   <!-- React + ReactDOM (UMD) -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -18,6 +23,7 @@
   <style>
     html, body, #root { height: 100%; }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .font-brand { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; letter-spacing: -0.01em; }
   </style>
 </head>
 <body>
@@ -92,9 +98,10 @@ const DAYS = [
   { id: "fri", label: "Friday" },
 ];
 
-const HOURS = Array.from({ length: 12 }, (_, i) => 8 + i);
+const HOURS = Array.from({ length: 13 }, (_, i) => 7 + i);
 
 const SHIFTS = [
+  { id: "atlantic", label: "Atlantic", startHour: 7,  endHour: 15 }, // 7am-4pm ET
   { id: "eastern",  label: "Eastern",  startHour: 8,  endHour: 16 }, // 8am-5pm
   { id: "central",  label: "Central",  startHour: 9,  endHour: 17 }, // 9am-6pm
   { id: "mountain", label: "Mountain", startHour: 10, endHour: 18 }, // 10am-7pm
@@ -165,8 +172,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -1192,7 +1199,7 @@ function TopBar({ session, onLogout, title }) {
   return (
     <div className="bg-white border-b border-slate-200">
       <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
-        <div className="text-lg font-semibold text-slate-800">{title}</div>
+        <div className="font-brand text-xl font-bold text-slate-900">RenewedVision Support</div>
         <div className="text-sm text-slate-600 flex items-center gap-3">
           <ConnectionBadge />
           <span>Signed in as <span className="font-medium">{session.username}</span></span>
@@ -1647,7 +1654,7 @@ function AdminApp({ session, onLogout }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <TopBar session={session} onLogout={onLogout} title="Scheduler — Admin" />
+      <TopBar session={session} onLogout={onLogout} title="RenewedVision Support" />
       <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="flex items-center justify-between gap-3 mb-4 border-b border-slate-200 flex-wrap">
           <div className="flex gap-1">
@@ -1777,26 +1784,28 @@ function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewU
         </div>
       </div>
 
-      {!showEveryone && (
-        <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
-          <div className="inline-flex rounded-md border border-slate-300 bg-white overflow-hidden">
-            <button
-              onClick={() => setViewerView("week")}
-              className={`px-3 py-1.5 text-sm font-medium ${viewerView === "week" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
-            >Week view</button>
-            <button
-              onClick={() => setViewerView("day")}
-              className={`px-3 py-1.5 text-sm font-medium border-l border-slate-300 ${viewerView === "day" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
-            >Daily view</button>
-          </div>
+      <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="inline-flex rounded-md border border-slate-300 bg-white overflow-hidden">
+          <button
+            onClick={() => setViewerView("week")}
+            className={`px-3 py-1.5 text-sm font-medium ${viewerView === "week" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+          >Week view</button>
+          <button
+            onClick={() => setViewerView("day")}
+            className={`px-3 py-1.5 text-sm font-medium border-l border-slate-300 ${viewerView === "day" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+          >Daily view</button>
+        </div>
+        {!showEveryone && (
           <div className="text-xs text-slate-500">
             Shift: <span className="font-medium text-slate-700">{(SHIFT_BY_ID[previewShift] || {}).label}</span>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {showEveryone
-        ? <TeamWeekGrid schedule={schedule} users={employees} highlightUsername={previewUsername} />
+        ? (viewerView === "week"
+            ? <TeamWeekGrid schedule={schedule} users={employees} highlightUsername={previewUsername} />
+            : <TeamDailyGrid schedule={schedule} users={employees} highlightUsername={previewUsername} />)
         : viewerView === "week"
           ? <EmployeeGrid schedule={schedule} username={previewUsername} shiftId={previewShift} />
           : <EmployeeDayStrip schedule={schedule} username={previewUsername} shiftId={previewShift} dayId={viewerDayId} setDayId={setViewerDayId} />}
@@ -2142,10 +2151,161 @@ function TeamWeekGrid({ schedule, users, highlightUsername }) {
   );
 }
 
+// Read-only team daily grid. Mirrors the admin Daily view (employees as rows,
+// hours as columns, colored role pills per run) but without the coverage
+// section and without the role-picker dropdowns. Used for "Show Everyone" on
+// the Employee view and the Schedule Viewer.
+function TeamDailyGrid({ schedule, users, highlightUsername }) {
+  const { rolesById } = useShared();
+  const [dayId, setDayId] = useState("mon");
+  const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
+
+  // Merge consecutive same-role hours into a single run (same logic as the
+  // admin view), plus merge off-shift hours into one "off" run.
+  function getRunsForEmployee(username, shiftId) {
+    const runs = [];
+    let current = null;
+    HOURS.forEach(h => {
+      const inShift = isHourInShift(shiftId, h);
+      if (!inShift) {
+        if (current && current.type === "off" && current.endHour === h - 1) {
+          current.endHour = h;
+        } else {
+          current = { type: "off", startHour: h, endHour: h, role: "" };
+          runs.push(current);
+        }
+        return;
+      }
+      const assigns = getCellAssignments(schedule, dayId, h);
+      const mine = assigns.find(a => a.username.toLowerCase() === username.toLowerCase());
+      const role = mine ? mine.role : "";
+      if (role && current && current.type === "assigned" && current.role === role && current.endHour === h - 1) {
+        current.endHour = h;
+      } else {
+        current = { type: "assigned", startHour: h, endHour: h, role };
+        runs.push(current);
+        if (!role) current = null; // don't merge empty cells
+      }
+    });
+    return runs;
+  }
+
+  return (
+    <div>
+      {/* Day picker */}
+      <div className="flex flex-wrap gap-1 mb-3">
+        {DAYS.map(d => (
+          <button
+            key={d.id}
+            onClick={() => setDayId(d.id)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+              dayId === d.id
+                ? "bg-blue-600 text-white"
+                : "bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </div>
+
+      {users.length === 0 ? (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
+          No employees yet.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-20">
+                  {dayLabel}
+                </th>
+                {HOURS.map(h => (
+                  <th key={h} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-center text-xs font-semibold text-slate-700 whitespace-nowrap">
+                    {hourRangeLabel(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(emp => {
+                const shiftId = getShiftOf(emp);
+                const runs = getRunsForEmployee(emp.username, shiftId);
+                const shiftLabel = (SHIFT_BY_ID[shiftId] || {}).label || "";
+                const isMe = highlightUsername && emp.username.toLowerCase() === highlightUsername.toLowerCase();
+                return (
+                  <tr key={emp.username} className="border-t border-slate-200">
+                    <td className={`p-2 ${isMe ? "bg-blue-50" : "bg-white"} border-r border-slate-200 font-medium text-slate-700 sticky left-0 z-10 whitespace-nowrap`}>
+                      <span className={isMe ? "font-bold underline" : ""}>
+                        {emp.displayName || emp.username}
+                      </span>
+                      {emp.role === "admin" && (
+                        <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
+                      )}
+                      <span className="ml-2 text-[10px] uppercase text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5">{shiftLabel}</span>
+                    </td>
+                    {runs.map(run => {
+                      const span = run.endHour - run.startHour + 1;
+                      if (run.type === "off") {
+                        return (
+                          <td
+                            key={run.startHour}
+                            colSpan={span}
+                            className="p-1 border-l border-slate-200 bg-slate-100 align-middle"
+                            title={`Off shift — ${shiftLabel}`}
+                          >
+                            <div className="text-center text-[11px] text-slate-400 italic select-none">Off</div>
+                          </td>
+                        );
+                      }
+                      const roleObj = run.role ? rolesById[run.role] : null;
+                      if (!roleObj) {
+                        return (
+                          <td
+                            key={run.startHour}
+                            colSpan={span}
+                            className="p-1 border-l border-slate-200 align-middle"
+                          >
+                            <div className="text-center text-[11px] text-slate-300">—</div>
+                          </td>
+                        );
+                      }
+                      const isMulti = span > 1;
+                      return (
+                        <td
+                          key={run.startHour}
+                          colSpan={span}
+                          className="p-1 border-l border-slate-200 align-middle"
+                        >
+                          <div className={`${roleObj.solid} border rounded w-full text-xs font-semibold text-center ${isMulti ? "px-2 py-1.5" : "px-1 py-1"}`}>
+                            <span>{roleObj.label}</span>
+                            {isMulti && (
+                              <span className="ml-2 text-[10px] opacity-90">
+                                {formatHour(run.startHour)}–{formatHour(run.endHour + 1)} · {span}h
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EmployeeApp({ session, onLogout }) {
   const { users, schedule: fullSchedule, rolesById } = useShared();
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
   const [showEveryone, setShowEveryone] = useState(false);
+  const [viewerView, setViewerView] = useState("week");
+  const [viewerDayId, setViewerDayId] = useState("mon");
   const weekKey = toDateKey(weekStart);
   const schedule = fullSchedule[weekKey] || {};
   const mySelf = users.find(u => u.username.toLowerCase() === session.username.toLowerCase());
@@ -2169,12 +2329,12 @@ function EmployeeApp({ session, onLogout }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <TopBar session={session} onLogout={onLogout} title="My Schedule" />
+      <TopBar session={session} onLogout={onLogout} title="RenewedVision Support" />
       <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="mb-4 flex items-end justify-between gap-3 flex-wrap">
           <div>
             <h2 className="text-xl font-semibold text-slate-800">{weekLabel}</h2>
-            <p className="text-sm text-slate-500">Monday–Friday, 8am–8pm ET · times shown in Eastern Time</p>
+            <p className="text-sm text-slate-500">Monday–Friday, 7am–8pm ET · times shown in Eastern Time</p>
           </div>
           <div className="flex items-center gap-3 flex-wrap justify-end">
             <span className="text-sm text-slate-600">{myShifts.length} shift{myShifts.length === 1 ? "" : "s"} assigned</span>
@@ -2193,10 +2353,33 @@ function EmployeeApp({ session, onLogout }) {
             </label>
           </div>
         </div>
+
+        <div className="mb-3 flex items-center gap-3 flex-wrap">
+          <div className="inline-flex rounded-md border border-slate-300 bg-white overflow-hidden">
+            <button
+              onClick={() => setViewerView("week")}
+              className={`px-3 py-1.5 text-sm font-medium ${viewerView === "week" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+            >Week view</button>
+            <button
+              onClick={() => setViewerView("day")}
+              className={`px-3 py-1.5 text-sm font-medium border-l border-slate-300 ${viewerView === "day" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+            >Daily view</button>
+          </div>
+          {!showEveryone && (
+            <div className="text-xs text-slate-500">
+              Shift: <span className="font-medium text-slate-700">{(SHIFT_BY_ID[myShiftId] || {}).label}</span>
+            </div>
+          )}
+        </div>
+
         {showEveryone ? (
-          <TeamWeekGrid schedule={schedule} users={users} highlightUsername={session.username} />
+          viewerView === "week"
+            ? <TeamWeekGrid schedule={schedule} users={users} highlightUsername={session.username} />
+            : <TeamDailyGrid schedule={schedule} users={users} highlightUsername={session.username} />
         ) : (
-          <EmployeeGrid schedule={schedule} username={session.username} shiftId={myShiftId} />
+          viewerView === "week"
+            ? <EmployeeGrid schedule={schedule} username={session.username} shiftId={myShiftId} />
+            : <EmployeeDayStrip schedule={schedule} username={session.username} shiftId={myShiftId} dayId={viewerDayId} setDayId={setViewerDayId} />
         )}
         <div className="mt-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="p-4 border-b border-slate-200 text-sm font-semibold text-slate-800">Shift list</div>
