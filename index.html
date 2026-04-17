@@ -94,7 +94,13 @@ function seedIfEmpty() {
       { username: "admin", password: "admin123", role: "admin", displayName: "Admin" },
     ]);
   }
-  if (loadJSON(LS_KEYS.schedule, null) == null) saveJSON(LS_KEYS.schedule, {});
+  const sched = loadJSON(LS_KEYS.schedule, null);
+  if (sched == null) {
+    saveJSON(LS_KEYS.schedule, {});
+  } else {
+    const migrated = migrateScheduleShape(sched);
+    if (migrated !== sched) saveJSON(LS_KEYS.schedule, migrated);
+  }
 }
 
 function formatHour(h) {
@@ -104,11 +110,73 @@ function formatHour(h) {
 }
 function hourRangeLabel(h) { return `${formatHour(h)}–${formatHour(h + 1)}`; }
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function getMondayOf(date) {
+  const d = new Date(date);
+  const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+function toDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function parseDateKey(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+function formatWeekRange(monday) {
+  const friday = addDays(monday, 4);
+  const mM = MONTH_NAMES[monday.getMonth()];
+  const fM = MONTH_NAMES[friday.getMonth()];
+  return `${mM} ${monday.getDate()} – ${fM} ${friday.getDate()}`;
+}
+
+// Schedule is now stored as { [weekKey]: { [dayId]: { [hour]: assignments } } }.
+// Older versions saved directly as { [dayId]: { [hour]: assignments } }.
+// This migration moves the old shape into the current week.
+const DAY_ID_SET = new Set(DAYS.map(d => d.id));
+function migrateScheduleShape(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const keys = Object.keys(raw);
+  if (keys.length === 0) return raw;
+  const looksOld = keys.some(k => DAY_ID_SET.has(k));
+  if (!looksOld) return raw;
+  const key = toDateKey(getMondayOf(new Date()));
+  return { [key]: raw };
+}
+
 function useLocalState(key, fallback) {
   const [val, setVal] = useState(() => loadJSON(key, fallback));
   useEffect(() => { saveJSON(key, val); }, [key, val]);
   return [val, setVal];
 }
+
+// Run schedule-shape migration once at module load, before any component reads
+// localStorage via useLocalState(). This handles users who already have a
+// saved session and will mount AdminApp/EmployeeApp on first paint.
+(function runInitialMigration() {
+  try {
+    const existing = loadJSON(LS_KEYS.schedule, null);
+    if (existing != null) {
+      const migrated = migrateScheduleShape(existing);
+      if (migrated !== existing) saveJSON(LS_KEYS.schedule, migrated);
+    }
+  } catch (e) { /* ignore */ }
+})();
 
 function getCellAssignments(schedule, dayId, hour) {
   return (schedule && schedule[dayId] && schedule[dayId][hour]) ? schedule[dayId][hour] : [];
@@ -709,13 +777,66 @@ function TopBar({ session, onLogout, title }) {
   );
 }
 
+function WeekSelector({ weekStart, onChange }) {
+  const todayMon = getMondayOf(new Date());
+  const isThisWeek = toDateKey(weekStart) === toDateKey(todayMon);
+  return (
+    <div className="inline-flex items-center bg-white border border-slate-300 rounded-md text-sm overflow-hidden">
+      <button
+        type="button"
+        onClick={() => onChange(addDays(weekStart, -7))}
+        className="px-2 py-1.5 text-slate-600 hover:bg-slate-50"
+        title="Previous week"
+      >
+        ‹
+      </button>
+      <div className="px-3 py-1.5 font-medium text-slate-800 whitespace-nowrap border-l border-r border-slate-200 min-w-[170px] text-center tabular-nums">
+        {formatWeekRange(weekStart)}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(addDays(weekStart, 7))}
+        className="px-2 py-1.5 text-slate-600 hover:bg-slate-50"
+        title="Next week"
+      >
+        ›
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(getMondayOf(new Date()))}
+        disabled={isThisWeek}
+        className={`px-2 py-1.5 text-xs border-l border-slate-300 ${
+          isThisWeek ? "text-slate-300 cursor-default" : "text-blue-600 hover:bg-slate-50"
+        }`}
+        title="Jump to this week"
+      >
+        Today
+      </button>
+    </div>
+  );
+}
+
 function AdminApp({ session, onLogout }) {
   const [users, setUsers] = useLocalState(LS_KEYS.users, []);
-  const [schedule, setSchedule] = useLocalState(LS_KEYS.schedule, {});
+  const [fullSchedule, setFullSchedule] = useLocalState(LS_KEYS.schedule, {});
   const [tab, setTab] = useState("schedule");
   const employees = useMemo(() => users, [users]);
   const [previewUsername, setPreviewUsername] = useState("");
-  const [scheduleView, setScheduleView] = useState("week");
+  const [scheduleView, setScheduleView] = useState("day");
+  const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
+  const weekKey = toDateKey(weekStart);
+  const weekSchedule = fullSchedule[weekKey] || {};
+
+  function setWeekSchedule(nextOrFn) {
+    setFullSchedule(prev => {
+      const current = prev[weekKey] || {};
+      const next = typeof nextOrFn === "function" ? nextOrFn(current) : nextOrFn;
+      const copy = { ...prev };
+      if (!next || Object.keys(next).length === 0) delete copy[weekKey];
+      else copy[weekKey] = next;
+      return copy;
+    });
+  }
 
   // Default the preview selector to the first employee once available
   useEffect(() => {
@@ -728,10 +849,17 @@ function AdminApp({ session, onLogout }) {
     <div className="min-h-screen bg-slate-50">
       <TopBar session={session} onLogout={onLogout} title="Scheduler — Admin" />
       <div className="max-w-7xl mx-auto px-6 py-6">
-        <div className="flex gap-1 mb-4 border-b border-slate-200">
-          <TabButton active={tab === "schedule"} onClick={() => setTab("schedule")}>Schedule</TabButton>
-          <TabButton active={tab === "viewer"} onClick={() => setTab("viewer")}>Schedule Viewer</TabButton>
-          <TabButton active={tab === "employees"} onClick={() => setTab("employees")}>Employees</TabButton>
+        <div className="flex items-center justify-between gap-3 mb-4 border-b border-slate-200 flex-wrap">
+          <div className="flex gap-1">
+            <TabButton active={tab === "schedule"} onClick={() => setTab("schedule")}>Schedule</TabButton>
+            <TabButton active={tab === "viewer"} onClick={() => setTab("viewer")}>Schedule Viewer</TabButton>
+            <TabButton active={tab === "employees"} onClick={() => setTab("employees")}>Employees</TabButton>
+          </div>
+          {tab !== "employees" && (
+            <div className="pb-2">
+              <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+            </div>
+          )}
         </div>
         {tab === "schedule" && (
           <div>
@@ -753,13 +881,13 @@ function AdminApp({ session, onLogout }) {
               </div>
             </div>
             {scheduleView === "week"
-              ? <ScheduleGrid schedule={schedule} setSchedule={setSchedule} employees={employees} />
-              : <DailyScheduleView schedule={schedule} setSchedule={setSchedule} employees={employees} />}
+              ? <ScheduleGrid schedule={weekSchedule} setSchedule={setWeekSchedule} employees={employees} />
+              : <DailyScheduleView schedule={weekSchedule} setSchedule={setWeekSchedule} employees={employees} />}
           </div>
         )}
         {tab === "viewer" && (
           <AdminScheduleViewer
-            schedule={schedule}
+            schedule={weekSchedule}
             employees={employees}
             previewUsername={previewUsername}
             setPreviewUsername={setPreviewUsername}
@@ -885,7 +1013,10 @@ function EmployeeGrid({ schedule, username }) {
 }
 
 function EmployeeApp({ session, onLogout }) {
-  const [schedule] = useLocalState(LS_KEYS.schedule, {});
+  const [fullSchedule] = useLocalState(LS_KEYS.schedule, {});
+  const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
+  const weekKey = toDateKey(weekStart);
+  const schedule = fullSchedule[weekKey] || {};
   const myShifts = useMemo(() => {
     const rows = [];
     DAYS.forEach(d => {
@@ -898,16 +1029,24 @@ function EmployeeApp({ session, onLogout }) {
     return rows;
   }, [schedule, session.username]);
 
+  const todayMon = getMondayOf(new Date());
+  const weekLabel = toDateKey(weekStart) === toDateKey(todayMon)
+    ? "This week"
+    : formatWeekRange(weekStart);
+
   return (
     <div className="min-h-screen bg-slate-50">
       <TopBar session={session} onLogout={onLogout} title="My Schedule" />
       <div className="max-w-7xl mx-auto px-6 py-6">
-        <div className="mb-4 flex items-end justify-between">
+        <div className="mb-4 flex items-end justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="text-xl font-semibold text-slate-800">This week</h2>
+            <h2 className="text-xl font-semibold text-slate-800">{weekLabel}</h2>
             <p className="text-sm text-slate-500">Monday–Friday, 8am–8pm ET · times shown in Eastern Time</p>
           </div>
-          <div className="text-sm text-slate-600">{myShifts.length} shift{myShifts.length === 1 ? "" : "s"} assigned</div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-slate-600">{myShifts.length} shift{myShifts.length === 1 ? "" : "s"} assigned</span>
+            <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+          </div>
         </div>
         <EmployeeGrid schedule={schedule} username={session.username} />
         <div className="mt-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
