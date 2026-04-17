@@ -112,6 +112,19 @@ const DEFAULT_SHIFT_ID = "eastern";
 function getShiftOf(user) {
   return (user && user.shift && SHIFT_BY_ID[user.shift]) ? user.shift : DEFAULT_SHIFT_ID;
 }
+
+// Departments that every employee belongs to. Edit here to add new ones.
+const DEPARTMENTS = [
+  { id: "propresenter", label: "ProPresenter Support" },
+  { id: "sales",        label: "Sales Support" },
+  { id: "advanced",     label: "Advanced Technical Support" },
+  { id: "management",   label: "Management/Systems" },
+];
+const DEPT_BY_ID = Object.fromEntries(DEPARTMENTS.map(d => [d.id, d]));
+const DEFAULT_DEPT_ID = "propresenter";
+function getDeptOf(user) {
+  return (user && user.department && DEPT_BY_ID[user.department]) ? user.department : DEFAULT_DEPT_ID;
+}
 function isHourInShift(shiftId, hour) {
   const s = SHIFT_BY_ID[shiftId || DEFAULT_SHIFT_ID] || SHIFT_BY_ID[DEFAULT_SHIFT_ID];
   return hour >= s.startHour && hour <= s.endHour;
@@ -170,8 +183,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -1167,7 +1180,7 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
 }
 
 function EmployeesTab({ users, setUsers, currentUsername }) {
-  const [form, setForm] = useState({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
+  const [form, setForm] = useState({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID, department: DEFAULT_DEPT_ID });
   const [error, setError] = useState("");
 
   function addUser(e) {
@@ -1181,8 +1194,9 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
       role: form.role,
       displayName: form.displayName.trim() || username,
       shift: form.shift,
+      department: form.department,
     }]);
-    setForm({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
+    setForm({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID, department: DEFAULT_DEPT_ID });
   }
 
   function removeUser(username) {
@@ -1212,13 +1226,17 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
     setUsers(users.map(u => u.username === username ? { ...u, shift: newShift } : u));
   }
 
+  function changeDepartment(username, newDept) {
+    setUsers(users.map(u => u.username === username ? { ...u, department: newDept } : u));
+  }
+
   const adminCount = users.filter(u => u.role === "admin").length;
 
   return (
     <div className="space-y-6">
       <div className="bg-white border border-slate-200 rounded-xl p-6">
         <h3 className="text-md font-semibold text-slate-800 mb-4">Add user</h3>
-        <form onSubmit={addUser} className="grid grid-cols-1 sm:grid-cols-6 gap-3">
+        <form onSubmit={addUser} className="grid grid-cols-1 sm:grid-cols-7 gap-3">
           <input placeholder="Username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })}
             className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
           <input placeholder="Display name (optional)" value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })}
@@ -1233,6 +1251,10 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
           <select value={form.shift} onChange={e => setForm({ ...form, shift: e.target.value })}
             className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white">
             {SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+          <select value={form.department} onChange={e => setForm({ ...form, department: e.target.value })}
+            className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white">
+            {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
           <button className="bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium px-4">Add</button>
         </form>
@@ -1253,6 +1275,7 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
                 <th className="px-4 py-2">Display name</th>
                 <th className="px-4 py-2">Role</th>
                 <th className="px-4 py-2">Shift</th>
+                <th className="px-4 py-2">Department</th>
                 <th className="px-4 py-2">Password</th>
                 <th className="px-4 py-2"></th>
               </tr>
@@ -1291,6 +1314,15 @@ function EmployeesTab({ users, setUsers, currentUsername }) {
                         className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white text-slate-700"
                       >
                         {SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <select
+                        value={getDeptOf(u)}
+                        onChange={e => changeDepartment(u.username, e.target.value)}
+                        className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white text-slate-700"
+                      >
+                        {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
                       </select>
                     </td>
                     <td className="px-4 py-2 font-mono text-slate-400">••••••••</td>
@@ -1643,6 +1675,7 @@ function RolesTab() {
 // flow through setNeeds, which persists to the shared JSON bin.
 function CoverageNeedsEditor() {
   const { coverageRoles, needs, setNeeds } = useShared();
+  const [collapsed, setCollapsed] = useState(true);
 
   function updateNeed(roleId, hour, rawValue) {
     const parsed = Math.max(0, Math.floor(Number(rawValue) || 0));
@@ -1662,11 +1695,22 @@ function CoverageNeedsEditor() {
     <div className="mt-6">
       <div className="mb-2 flex items-end justify-between flex-wrap gap-2">
         <div>
-          <h3 className="text-base font-semibold text-slate-800">Coverage needs</h3>
-          <p className="text-sm text-slate-500">How many people each coverage role needs at each hour. Zero means optional.</p>
+          <button
+            type="button"
+            onClick={() => setCollapsed(v => !v)}
+            className="inline-flex items-center gap-1.5 text-base font-semibold text-slate-800 hover:text-slate-600"
+            aria-expanded={!collapsed}
+            title={collapsed ? "Expand coverage needs" : "Collapse coverage needs"}
+          >
+            <span className={`inline-block transition-transform ${collapsed ? "" : "rotate-90"}`}>▸</span>
+            <span>Coverage needs</span>
+          </button>
+          {!collapsed && (
+            <p className="text-sm text-slate-500 mt-1">How many people each coverage role needs at each hour. Zero means optional.</p>
+          )}
         </div>
       </div>
-      {coverageRoles.length === 0 ? (
+      {collapsed ? null : coverageRoles.length === 0 ? (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
           No coverage roles yet. Mark a role as "Needs coverage" above to edit its targets here.
         </div>
