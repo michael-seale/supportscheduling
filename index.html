@@ -88,7 +88,25 @@ function decorateRole(role) {
     light: pal.light,
     colorName: role.color || DEFAULT_COLOR,
     department: resolveRoleDepartment(role),
+    group: (role.group || "").trim(),
   };
+}
+
+// Group roles by their `group` field so the Coverage row and Roles table can
+// render one section per group. Returns an array of { name, roles } clusters,
+// sorted alphabetically by group name. Ungrouped roles (empty name) land in
+// a trailing cluster called "" so callers can label it however they want.
+function groupRolesByGroup(roles) {
+  const map = new Map();
+  (roles || []).forEach(r => {
+    const g = (r.group || "").trim();
+    if (!map.has(g)) map.set(g, []);
+    map.get(g).push(r);
+  });
+  const named = [...map.keys()].filter(k => k).sort((a, b) => a.localeCompare(b));
+  const out = named.map(n => ({ name: n, roles: map.get(n) }));
+  if (map.has("")) out.push({ name: "", roles: map.get("") });
+  return out;
 }
 
 // Slugify a label into a stable, filesystem-safe ID.
@@ -198,8 +216,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -601,6 +619,13 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
   const [clearOpen, setClearOpen] = useState(false);
   const [clearTargets, setClearTargets] = useState([]); // array of usernames to clear
 
+  // Cluster coverage roles by their group so the Coverage band can render a
+  // "Chat Group" / "Phone Group" breakdown under a single "Coverage" header.
+  const coverageGroups = useMemo(() => groupRolesByGroup(coverageRoles), [coverageRoles]);
+  // Same grouping for the per-cell role dropdowns so <optgroup> can show e.g.
+  // "Chat Group" with Chat, Chat 2 underneath.
+  const roleGroupsForSelect = useMemo(() => groupRolesByGroup(roles), [roles]);
+
   function toggleCopyTarget(id) {
     setCopyTargets(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   }
@@ -887,10 +912,12 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                   </th>
                 ))}
               </tr>
-              {/* Coverage needs row (collapsable) */}
+              {/* Coverage needs header row — single sticky cell that spans the
+                  whole table when collapsed, or just the left label column when
+                  expanded so each group below gets its own sub-row. */}
               <tr>
                 <th
-                  colSpan={coverageCollapsed ? HOURS.length + 1 : 1}
+                  colSpan={HOURS.length + 1}
                   className="bg-slate-50 border-b border-slate-200 p-2 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-20"
                 >
                   <button
@@ -906,39 +933,55 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                     )}
                   </button>
                 </th>
-                {!coverageCollapsed && HOURS.map(h => {
-                  const assigns = getCellAssignments(schedule, dayId, h);
-                  const counts = {};
-                  assigns.forEach(a => { counts[a.role] = (counts[a.role] || 0) + 1; });
-                  return (
-                    <td key={h} className="bg-slate-50 border-b border-l border-slate-200 p-1 align-top">
-                      <div className="flex flex-col gap-1">
-                        {coverageRoles.map(r => {
-                          const need = getNeed(needs, r.id, h);
-                          const have = counts[r.id] || 0;
-                          const filled = (need > 0 && have >= need) || (need === 0 && have > 0);
-                          let btnClass;
-                          if (filled) btnClass = r.solid;
-                          else if (need > 0 || have > 0) btnClass = r.light;
-                          else btnClass = "bg-white text-slate-400 border-slate-200";
-                          const countText = need > 0 ? `${have}/${need}` : `${have}`;
-                          return (
-                            <button
-                              key={r.id}
-                              onClick={() => setEditing({ hour: h, role: r.id })}
-                              title={`${have} of ${need} ${r.label} — click to manage`}
-                              className={`${btnClass} border rounded px-1.5 py-0.5 text-[10px] hover:opacity-80 transition flex items-center justify-between gap-1`}
-                            >
-                              <span className="font-semibold">{r.label.charAt(0)}</span>
-                              <span className="tabular-nums">{countText}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </td>
-                  );
-                })}
               </tr>
+              {/* Per-group coverage sub-rows. Each group renders its label on
+                  the left and a stack of coverage pills for that group's roles
+                  under each hour column. Ungrouped roles fall into a trailing
+                  cluster labeled "Ungrouped" so they stay visible. */}
+              {!coverageCollapsed && coverageGroups.map((group, gi) => {
+                const label = group.name || "Ungrouped";
+                return (
+                  <tr key={`cov-${group.name || "__none__"}-${gi}`}>
+                    <th
+                      className="bg-slate-50 border-b border-slate-200 pl-6 pr-2 py-1.5 text-left text-[11px] font-medium text-slate-500 sticky left-0 z-20 whitespace-nowrap"
+                    >
+                      {label}
+                    </th>
+                    {HOURS.map(h => {
+                      const assigns = getCellAssignments(schedule, dayId, h);
+                      const counts = {};
+                      assigns.forEach(a => { counts[a.role] = (counts[a.role] || 0) + 1; });
+                      return (
+                        <td key={h} className="bg-slate-50 border-b border-l border-slate-200 p-1 align-top">
+                          <div className="flex flex-col gap-1">
+                            {group.roles.map(r => {
+                              const need = getNeed(needs, r.id, h);
+                              const have = counts[r.id] || 0;
+                              const filled = (need > 0 && have >= need) || (need === 0 && have > 0);
+                              let btnClass;
+                              if (filled) btnClass = r.solid;
+                              else if (need > 0 || have > 0) btnClass = r.light;
+                              else btnClass = "bg-white text-slate-400 border-slate-200";
+                              const countText = need > 0 ? `${have}/${need}` : `${have}`;
+                              return (
+                                <button
+                                  key={r.id}
+                                  onClick={() => setEditing({ hour: h, role: r.id })}
+                                  title={`${have} of ${need} ${r.label} — click to manage`}
+                                  className={`${btnClass} border rounded px-1.5 py-0.5 text-[10px] hover:opacity-80 transition flex items-center justify-between gap-1`}
+                                >
+                                  <span className="font-semibold">{r.label.charAt(0)}</span>
+                                  <span className="tabular-nums">{countText}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
             </thead>
             <tbody>
               {employees.map(emp => {
@@ -991,8 +1034,18 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                               className={`${selectClass} w-full text-xs rounded ${isMulti ? "px-2 py-1.5" : "px-1 py-1"} cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-400`}
                             >
                               <option value="">—</option>
-                              {roles.map(r => (
-                                <option key={r.id} value={r.id}>{r.label}</option>
+                              {roleGroupsForSelect.map((group, gi) => (
+                                group.name ? (
+                                  <optgroup key={`g-${group.name}-${gi}`} label={group.name}>
+                                    {group.roles.map(r => (
+                                      <option key={r.id} value={r.id}>{r.label}</option>
+                                    ))}
+                                  </optgroup>
+                                ) : (
+                                  group.roles.map(r => (
+                                    <option key={r.id} value={r.id}>{r.label}</option>
+                                  ))
+                                )
                               ))}
                             </select>
                             {isMulti && roleObj && (
@@ -1586,7 +1639,16 @@ function RolesTab() {
   const [newColor, setNewColor] = useState("indigo");
   const [newIsCoverage, setNewIsCoverage] = useState(false);
   const [newDepartment, setNewDepartment] = useState("");
+  const [newGroup, setNewGroup] = useState("");
   const [error, setError] = useState("");
+
+  // Distinct group names across existing roles — used to populate the datalist
+  // so users can autocomplete instead of retyping group names from scratch.
+  const existingGroups = useMemo(() => {
+    const s = new Set();
+    rolesRaw.forEach(r => { if (r.group && r.group.trim()) s.add(r.group.trim()); });
+    return [...s].sort((a, b) => a.localeCompare(b));
+  }, [rolesRaw]);
 
   function addRole(e) {
     e.preventDefault();
@@ -1600,11 +1662,12 @@ function RolesTab() {
       setError("A role with that label already exists.");
       return;
     }
-    setRoles([...rolesRaw, { id, label, color: newColor, isCoverage: newIsCoverage, department: newDepartment }]);
+    setRoles([...rolesRaw, { id, label, color: newColor, isCoverage: newIsCoverage, department: newDepartment, group: newGroup.trim() }]);
     setNewLabel("");
     setNewColor("indigo");
     setNewIsCoverage(false);
     setNewDepartment("");
+    setNewGroup("");
   }
 
   function updateRole(id, patch) {
@@ -1673,13 +1736,26 @@ function RolesTab() {
                 {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Group</label>
+              <input
+                list="role-groups-datalist"
+                placeholder="e.g. Chat Group"
+                value={newGroup}
+                onChange={e => setNewGroup(e.target.value)}
+                className="border border-slate-300 rounded-md px-3 py-2 text-sm w-48"
+              />
+            </div>
             <div className="self-end">
               <button className="bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium px-4 py-2">Add role</button>
             </div>
           </div>
+          <datalist id="role-groups-datalist">
+            {existingGroups.map(g => <option key={g} value={g} />)}
+          </datalist>
           {error && <div className="text-sm text-red-600">{error}</div>}
           <p className="text-xs text-slate-500">
-            Coverage roles (like Chat, Phone, Email) show as pills on the schedule grid and in the per-hour coverage row. Non-coverage roles (like Lunch, Meeting) only show when assigned to an employee.
+            Coverage roles (like Chat, Phone, Email) show as pills on the schedule grid and in the per-hour coverage row. Non-coverage roles (like Lunch, Meeting) only show when assigned to an employee. Roles with the same Group name cluster together on the Coverage row (e.g. "Chat" and "Chat 2" under "Chat Group").
           </p>
         </form>
       </div>
@@ -1699,6 +1775,7 @@ function RolesTab() {
                 <th className="px-4 py-2">Color</th>
                 <th className="px-4 py-2">Coverage</th>
                 <th className="px-4 py-2">Department</th>
+                <th className="px-4 py-2">Group</th>
                 <th className="px-4 py-2"></th>
               </tr>
             </thead>
@@ -1745,6 +1822,15 @@ function RolesTab() {
                         <option value="">— Unassigned —</option>
                         {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
                       </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <input
+                        list="role-groups-datalist"
+                        placeholder="—"
+                        value={r.group || ""}
+                        onChange={e => updateRole(r.id, { group: e.target.value })}
+                        className="border border-slate-300 rounded-md px-2 py-1 text-xs w-36"
+                      />
                     </td>
                     <td className="px-4 py-2 text-right">
                       <div className="flex items-center justify-end gap-3">
