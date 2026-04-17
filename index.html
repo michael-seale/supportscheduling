@@ -983,6 +983,12 @@ function AdminApp({ session, onLogout }) {
 }
 
 function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewUsername }) {
+  const [viewerView, setViewerView] = useState("week");
+  const [viewerDayId, setViewerDayId] = useState("mon");
+
+  const previewEmp = employees.find(e => e.username.toLowerCase() === (previewUsername || "").toLowerCase());
+  const previewShift = getShiftOf(previewEmp);
+
   const shifts = useMemo(() => {
     if (!previewUsername) return [];
     const rows = [];
@@ -1030,7 +1036,25 @@ function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewU
         </div>
       </div>
 
-      <EmployeeGrid schedule={schedule} username={previewUsername} />
+      <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="inline-flex rounded-md border border-slate-300 bg-white overflow-hidden">
+          <button
+            onClick={() => setViewerView("week")}
+            className={`px-3 py-1.5 text-sm font-medium ${viewerView === "week" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+          >Week view</button>
+          <button
+            onClick={() => setViewerView("day")}
+            className={`px-3 py-1.5 text-sm font-medium border-l border-slate-300 ${viewerView === "day" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+          >Daily view</button>
+        </div>
+        <div className="text-xs text-slate-500">
+          Shift: <span className="font-medium text-slate-700">{(SHIFT_BY_ID[previewShift] || {}).label}</span>
+        </div>
+      </div>
+
+      {viewerView === "week"
+        ? <EmployeeGrid schedule={schedule} username={previewUsername} shiftId={previewShift} />
+        : <EmployeeDayStrip schedule={schedule} username={previewUsername} shiftId={previewShift} dayId={viewerDayId} setDayId={setViewerDayId} />}
 
       <div className="mt-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="p-4 border-b border-slate-200 text-sm font-semibold text-slate-800">Shift list</div>
@@ -1065,31 +1089,219 @@ function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewU
   );
 }
 
-function EmployeeGrid({ schedule, username }) {
+// Compute a rendering plan for the weekly grid of one employee.
+// Returns plan[dayId][hour] = { type, role?, rowSpan, startHour } for cells
+// that should render (as the start of a run), or null for cells that are
+// covered by an earlier rowSpan-merged cell in the same column.
+function buildEmployeeWeekPlan(schedule, username, shiftId) {
+  const plan = {};
+  DAYS.forEach(d => {
+    plan[d.id] = {};
+    let running = null;
+    HOURS.forEach(h => {
+      const inShift = isHourInShift(shiftId, h);
+      if (!inShift) {
+        if (running && running.type === "off" && running.endHour === h - 1) {
+          running.rowSpan += 1;
+          running.endHour = h;
+          plan[d.id][h] = null;
+        } else {
+          running = { type: "off", role: "", rowSpan: 1, startHour: h, endHour: h };
+          plan[d.id][h] = running;
+        }
+        return;
+      }
+      const assigns = getCellAssignments(schedule, d.id, h);
+      const mine = assigns.find(a => a.username.toLowerCase() === username.toLowerCase());
+      const role = mine ? mine.role : "";
+      if (role && running && running.type === "assigned" && running.role === role && running.endHour === h - 1) {
+        running.rowSpan += 1;
+        running.endHour = h;
+        plan[d.id][h] = null;
+      } else {
+        running = { type: "assigned", role, rowSpan: 1, startHour: h, endHour: h };
+        plan[d.id][h] = running;
+        if (!role) running = null; // empty in-shift hours don't merge
+      }
+    });
+  });
+  return plan;
+}
+
+function EmployeeGrid({ schedule, username, shiftId }) {
+  const resolvedShift = shiftId || DEFAULT_SHIFT_ID;
+  const plan = buildEmployeeWeekPlan(schedule, username, resolvedShift);
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-      <div className="grid" style={{ gridTemplateColumns: "90px repeat(5, minmax(0, 1fr))" }}>
-        <div className="bg-slate-100 border-b border-slate-200 p-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">Time (ET)</div>
-        {DAYS.map(d => (
-          <div key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</div>
-        ))}
-        {HOURS.map(h => (
-          <React.Fragment key={h}>
-            <div className="border-b border-slate-200 p-2 text-xs text-slate-500 bg-slate-50 flex items-start">{hourRangeLabel(h)}</div>
-            {DAYS.map(d => {
-              const mine = getCellAssignments(schedule, d.id, h).filter(a => a.username.toLowerCase() === username.toLowerCase());
-              return (
-                <div key={`${d.id}-${h}`} className="border-b border-l border-slate-200 p-2 min-h-[60px]">
-                  {mine.map((a, i) => (
-                    <div key={i} className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].color}`}>
-                      {ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].label}
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr>
+            <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-[90px]">Time (ET)</th>
+            {DAYS.map(d => (
+              <th key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {HOURS.map(h => (
+            <tr key={h} className="border-t border-slate-200">
+              <td className="p-2 text-xs text-slate-500 bg-slate-50 border-r border-slate-200 whitespace-nowrap align-top">{hourRangeLabel(h)}</td>
+              {DAYS.map(d => {
+                const cell = plan[d.id][h];
+                if (cell === null) return null; // covered by rowSpan above
+                if (cell.type === "off") {
+                  return (
+                    <td
+                      key={d.id}
+                      rowSpan={cell.rowSpan}
+                      className="border-l border-slate-200 bg-slate-100 p-2 align-middle"
+                    >
+                      <div className="text-center text-[11px] text-slate-400 italic select-none">Off</div>
+                    </td>
+                  );
+                }
+                const roleObj = cell.role ? ROLE_BY_ID[cell.role] : null;
+                if (!roleObj) {
+                  return (
+                    <td
+                      key={d.id}
+                      rowSpan={cell.rowSpan}
+                      className="border-l border-slate-200 p-2 min-h-[40px] align-middle"
+                    ></td>
+                  );
+                }
+                return (
+                  <td
+                    key={d.id}
+                    rowSpan={cell.rowSpan}
+                    className={`border-l border-slate-200 align-middle p-0`}
+                  >
+                    <div className={`w-full h-full flex flex-col items-center justify-center text-center ${roleObj.solid} px-2 py-2 text-xs font-semibold`}>
+                      <span>{roleObj.label}</span>
+                      {cell.rowSpan > 1 && (
+                        <span className="text-[10px] opacity-90 mt-0.5">
+                          {formatHour(cell.startHour)}–{formatHour(cell.endHour + 1)} · {cell.rowSpan}h
+                        </span>
+                      )}
                     </div>
-                  ))}
-                </div>
-              );
-            })}
-          </React.Fragment>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
+  const resolvedShift = shiftId || DEFAULT_SHIFT_ID;
+  // Build runs across HOURS for this employee/day, merging same-role hours and
+  // off-shift hours separately.
+  const runs = useMemo(() => {
+    const r = [];
+    let current = null;
+    HOURS.forEach(h => {
+      const inShift = isHourInShift(resolvedShift, h);
+      if (!inShift) {
+        if (current && current.type === "off" && current.endHour === h - 1) {
+          current.endHour = h;
+        } else {
+          current = { type: "off", role: "", startHour: h, endHour: h };
+          r.push(current);
+        }
+        return;
+      }
+      const assigns = getCellAssignments(schedule, dayId, h);
+      const mine = assigns.find(a => a.username.toLowerCase() === username.toLowerCase());
+      const role = mine ? mine.role : "";
+      if (role && current && current.type === "assigned" && current.role === role && current.endHour === h - 1) {
+        current.endHour = h;
+      } else {
+        current = { type: "assigned", role, startHour: h, endHour: h };
+        r.push(current);
+        if (!role) current = null;
+      }
+    });
+    return r;
+  }, [schedule, username, dayId, resolvedShift]);
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1 mb-3">
+        {DAYS.map(d => (
+          <button
+            key={d.id}
+            onClick={() => setDayId(d.id)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+              dayId === d.id
+                ? "bg-blue-600 text-white"
+                : "bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {d.label}
+          </button>
         ))}
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr>
+              {HOURS.map(h => (
+                <th key={h} className="bg-slate-100 border-b border-l first:border-l-0 border-slate-200 p-2 text-center text-[11px] font-semibold text-slate-600 whitespace-nowrap">
+                  {hourRangeLabel(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              {runs.map(run => {
+                const span = run.endHour - run.startHour + 1;
+                if (run.type === "off") {
+                  return (
+                    <td
+                      key={run.startHour}
+                      colSpan={span}
+                      className="border-t border-l first:border-l-0 border-slate-200 bg-slate-100 p-3 align-middle"
+                    >
+                      <div className="text-center text-[11px] text-slate-400 italic select-none">Off</div>
+                    </td>
+                  );
+                }
+                const roleObj = run.role ? ROLE_BY_ID[run.role] : null;
+                if (!roleObj) {
+                  return (
+                    <td
+                      key={run.startHour}
+                      colSpan={span}
+                      className="border-t border-l first:border-l-0 border-slate-200 p-3 align-middle"
+                    >
+                      <div className="text-center text-[11px] text-slate-300">—</div>
+                    </td>
+                  );
+                }
+                return (
+                  <td
+                    key={run.startHour}
+                    colSpan={span}
+                    className="border-t border-l first:border-l-0 border-slate-200 p-0 align-middle"
+                  >
+                    <div className={`w-full h-full ${roleObj.solid} px-3 py-3 text-center text-xs font-semibold`}>
+                      <span>{roleObj.label}</span>
+                      {span > 1 && (
+                        <span className="ml-2 text-[10px] opacity-90">
+                          {formatHour(run.startHour)}–{formatHour(run.endHour + 1)} · {span}h
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -1097,9 +1309,12 @@ function EmployeeGrid({ schedule, username }) {
 
 function EmployeeApp({ session, onLogout }) {
   const [fullSchedule] = useLocalState(LS_KEYS.schedule, {});
+  const [users] = useLocalState(LS_KEYS.users, []);
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
   const weekKey = toDateKey(weekStart);
   const schedule = fullSchedule[weekKey] || {};
+  const mySelf = users.find(u => u.username.toLowerCase() === session.username.toLowerCase());
+  const myShiftId = getShiftOf(mySelf);
   const myShifts = useMemo(() => {
     const rows = [];
     DAYS.forEach(d => {
@@ -1131,7 +1346,7 @@ function EmployeeApp({ session, onLogout }) {
             <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
           </div>
         </div>
-        <EmployeeGrid schedule={schedule} username={session.username} />
+        <EmployeeGrid schedule={schedule} username={session.username} shiftId={myShiftId} />
         <div className="mt-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="p-4 border-b border-slate-200 text-sm font-semibold text-slate-800">Shift list</div>
           {myShifts.length === 0 ? (
