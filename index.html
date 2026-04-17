@@ -117,20 +117,18 @@ function isHourInShift(shiftId, hour) {
   return hour >= s.startHour && hour <= s.endHour;
 }
 
-const NEEDS = {
-  8:  { chat: 0, phone: 0, email: 5 },
-  9:  { chat: 2, phone: 1, email: 2 },
-  10: { chat: 3, phone: 2, email: 1 },
-  11: { chat: 3, phone: 2, email: 1 },
-  12: { chat: 3, phone: 2, email: 1 },
-  13: { chat: 3, phone: 2, email: 1 },
-  14: { chat: 3, phone: 2, email: 1 },
-  15: { chat: 3, phone: 2, email: 1 },
-  16: { chat: 3, phone: 1, email: 1 },
-  17: { chat: 0, phone: 0, email: 1 },
-  18: { chat: 0, phone: 0, email: 1 },
-  19: { chat: 0, phone: 0, email: 1 },
+// Coverage needs keyed by roleId -> hour -> integer. Used as the starting
+// point when the remote bin has no needs stored; after that, edits flow
+// through the shared state editor on Settings → Roles.
+const DEFAULT_NEEDS = {
+  chat:  { 9: 2, 10: 3, 11: 3, 12: 3, 13: 3, 14: 3, 15: 3, 16: 3 },
+  phone: { 9: 1, 10: 2, 11: 2, 12: 2, 13: 2, 14: 2, 15: 2, 16: 1 },
+  email: { 8: 5, 9: 2, 10: 1, 11: 1, 12: 1, 13: 1, 14: 1, 15: 1, 16: 1, 17: 1, 18: 1, 19: 1 },
 };
+
+function getNeed(needs, roleId, hour) {
+  return (needs && needs[roleId] && Number.isFinite(needs[roleId][hour])) ? needs[roleId][hour] : 0;
+}
 
 // Session (who is currently logged in) stays local to each browser so that
 // different users on different devices can be signed in at the same time.
@@ -172,8 +170,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -194,6 +192,7 @@ async function fetchRemote() {
     users: Array.isArray(record.users) ? record.users : [],
     roles: (Array.isArray(record.roles) && record.roles.length > 0) ? record.roles : DEFAULT_ROLES,
     schedule: (record.schedule && typeof record.schedule === "object" && !Array.isArray(record.schedule)) ? record.schedule : {},
+    needs: (record.needs && typeof record.needs === "object" && !Array.isArray(record.needs)) ? record.needs : DEFAULT_NEEDS,
     version: typeof record.version === "number" ? record.version : 0,
   };
 }
@@ -283,7 +282,7 @@ function SharedStateProvider({ children }) {
   // Combine users + roles + schedule in one useState so functional updates
   // always see the latest values for ALL of them, even if multiple setters
   // are called in the same event handler.
-  const [appState, setAppState] = useState({ users: [], roles: DEFAULT_ROLES, schedule: {} });
+  const [appState, setAppState] = useState({ users: [], roles: DEFAULT_ROLES, schedule: {}, needs: DEFAULT_NEEDS });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [writing, setWriting] = useState(false);
@@ -305,6 +304,7 @@ function SharedStateProvider({ children }) {
           users: remote.users,
           roles: remote.roles,
           schedule: migrateScheduleShape(remote.schedule),
+          needs: remote.needs,
         });
         setLastSync(Date.now());
         setError(null);
@@ -330,6 +330,7 @@ function SharedStateProvider({ children }) {
             users: remote.users,
             roles: remote.roles,
             schedule: migrateScheduleShape(remote.schedule),
+            needs: remote.needs,
           });
         }
         setError(null);
@@ -350,6 +351,7 @@ function SharedStateProvider({ children }) {
       users: nextState.users,
       roles: nextState.roles,
       schedule: nextState.schedule,
+      needs: nextState.needs,
       version: newVersion,
     };
     writeQueueRef.current = writeQueueRef.current.then(async () => {
@@ -391,6 +393,14 @@ function SharedStateProvider({ children }) {
       return next;
     });
   }
+  function setNeeds(nextOrFn) {
+    setAppState(prev => {
+      const nextNeeds = typeof nextOrFn === "function" ? nextOrFn(prev.needs) : nextOrFn;
+      const next = { ...prev, needs: nextNeeds };
+      enqueueWrite(next);
+      return next;
+    });
+  }
   // Atomic update of roles + schedule together (used when deleting a role and
   // stripping orphan assignments in one PUT).
   function setRolesAndSchedule(nextRolesOrFn, nextScheduleOrFn) {
@@ -411,6 +421,7 @@ function SharedStateProvider({ children }) {
         users: remote.users,
         roles: remote.roles,
         schedule: migrateScheduleShape(remote.schedule),
+        needs: remote.needs,
       });
       setLastSync(Date.now());
       setError(null);
@@ -432,9 +443,11 @@ function SharedStateProvider({ children }) {
     rolesRaw: appState.roles,  // minimal-shape roles for writing back
     rolesById,
     coverageRoles,
+    needs: appState.needs,
     setUsers,
     setSchedule,
     setRoles,
+    setNeeds,
     setRolesAndSchedule,
     loading,
     error,
@@ -544,12 +557,13 @@ function ScheduleGrid({ schedule, setSchedule, employees }) {
 }
 
 function DailyScheduleView({ schedule, setSchedule, employees }) {
-  const { roles, rolesById, coverageRoles } = useShared();
+  const { roles, rolesById, coverageRoles, needs } = useShared();
   const [dayId, setDayId] = useState("mon");
   const [editing, setEditing] = useState(null); // { hour, role } for needs-pill modal
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyTargets, setCopyTargets] = useState([]); // array of target day IDs
   const [copyNotice, setCopyNotice] = useState(""); // short-lived success message
+  const [coverageCollapsed, setCoverageCollapsed] = useState(false);
 
   function toggleCopyTarget(id) {
     setCopyTargets(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -741,13 +755,26 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                   </th>
                 ))}
               </tr>
-              {/* Coverage needs row */}
+              {/* Coverage needs row (collapsable) */}
               <tr>
-                <th className="bg-slate-50 border-b border-slate-200 p-2 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-20">
-                  Coverage
+                <th
+                  colSpan={coverageCollapsed ? HOURS.length + 1 : 1}
+                  className="bg-slate-50 border-b border-slate-200 p-2 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-20"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setCoverageCollapsed(v => !v)}
+                    className="inline-flex items-center gap-1 hover:text-slate-700"
+                    title={coverageCollapsed ? "Expand coverage" : "Collapse coverage"}
+                  >
+                    <span className={`inline-block transition-transform ${coverageCollapsed ? "" : "rotate-90"}`}>▸</span>
+                    <span>Coverage</span>
+                    {coverageCollapsed && (
+                      <span className="ml-2 normal-case tracking-normal text-slate-400 text-[11px] font-normal">(click to expand)</span>
+                    )}
+                  </button>
                 </th>
-                {HOURS.map(h => {
-                  const needs = NEEDS[h] || { chat: 0, phone: 0, email: 0 };
+                {!coverageCollapsed && HOURS.map(h => {
                   const assigns = getCellAssignments(schedule, dayId, h);
                   const counts = {};
                   assigns.forEach(a => { counts[a.role] = (counts[a.role] || 0) + 1; });
@@ -755,7 +782,7 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                     <td key={h} className="bg-slate-50 border-b border-l border-slate-200 p-1 align-top">
                       <div className="flex flex-col gap-1">
                         {coverageRoles.map(r => {
-                          const need = needs[r.id] || 0;
+                          const need = getNeed(needs, r.id, h);
                           const have = counts[r.id] || 0;
                           const filled = (need > 0 && have >= need) || (need === 0 && have > 0);
                           let btnClass;
@@ -872,8 +899,7 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
 }
 
 function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
-  const { roles, coverageRoles } = useShared();
-  const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
+  const { roles, coverageRoles, needs } = useShared();
   const assignedByRole = {};
   roles.forEach(r => { assignedByRole[r.id] = []; });
   assignments.forEach(a => {
@@ -885,7 +911,7 @@ function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
     <div className="border-b border-l border-slate-200 p-1.5 min-h-[72px]">
       <div className="flex flex-col gap-1">
         {coverageRoles.map(r => {
-          const need = needs[r.id] || 0;
+          const need = getNeed(needs, r.id, hour);
           const names = assignedByRole[r.id] || [];
           const have = names.length;
 
@@ -930,7 +956,7 @@ function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
 }
 
 function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSave }) {
-  const { rolesById } = useShared();
+  const { rolesById, needs } = useShared();
   const existing = getCellAssignments(schedule, dayId, hour);
   const currentForRole = existing.filter(a => a.role === role).map(a => a.username);
   const [selected, setSelected] = useState(() => new Set(currentForRole));
@@ -941,7 +967,7 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
 
   const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
   const roleObj = rolesById[role] || { label: role, solid: "bg-slate-600 text-white border-slate-700" };
-  const need = (NEEDS[hour] || {})[role] || 0;
+  const need = getNeed(needs, role, hour);
 
   function toggle(username) {
     const next = new Set(selected);
@@ -1493,6 +1519,84 @@ function RolesTab() {
           </table>
         )}
       </div>
+
+      <CoverageNeedsEditor />
+    </div>
+  );
+}
+
+// Editable table of coverage needs keyed by (coverage role × hour). Writes
+// flow through setNeeds, which persists to the shared JSON bin.
+function CoverageNeedsEditor() {
+  const { coverageRoles, needs, setNeeds } = useShared();
+
+  function updateNeed(roleId, hour, rawValue) {
+    const parsed = Math.max(0, Math.floor(Number(rawValue) || 0));
+    setNeeds(prev => {
+      const prevRole = (prev && prev[roleId]) || {};
+      const nextRole = { ...prevRole };
+      if (parsed === 0) delete nextRole[hour];
+      else nextRole[hour] = parsed;
+      const next = { ...(prev || {}) };
+      if (Object.keys(nextRole).length === 0) delete next[roleId];
+      else next[roleId] = nextRole;
+      return next;
+    });
+  }
+
+  return (
+    <div className="mt-6">
+      <div className="mb-2 flex items-end justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="text-base font-semibold text-slate-800">Coverage needs</h3>
+          <p className="text-sm text-slate-500">How many people each coverage role needs at each hour. Zero means optional.</p>
+        </div>
+      </div>
+      {coverageRoles.length === 0 ? (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
+          No coverage roles yet. Mark a role as "Needs coverage" above to edit its targets here.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="bg-slate-50 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-10 w-[140px]">Role</th>
+                {HOURS.map(h => (
+                  <th key={h} className="bg-slate-50 border-b border-l border-slate-200 p-2 text-center text-[11px] font-semibold text-slate-600 whitespace-nowrap">
+                    {hourRangeLabel(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {coverageRoles.map(r => (
+                <tr key={r.id} className="border-t border-slate-200">
+                  <td className="p-2 bg-white sticky left-0 z-10 border-r border-slate-200 whitespace-nowrap">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-semibold ${r.solid}`}>
+                      {r.label}
+                    </span>
+                  </td>
+                  {HOURS.map(h => {
+                    const val = getNeed(needs, r.id, h);
+                    return (
+                      <td key={h} className="p-1 border-l border-slate-200 text-center">
+                        <input
+                          type="number"
+                          min="0"
+                          value={val}
+                          onChange={e => updateNeed(r.id, h, e.target.value)}
+                          className={`w-12 text-center text-sm rounded border px-1 py-1 focus:outline-none focus:ring-2 focus:ring-blue-400 ${val > 0 ? "border-slate-300 bg-white text-slate-800" : "border-slate-200 bg-slate-50 text-slate-400"}`}
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1680,11 +1784,6 @@ function AdminApp({ session, onLogout }) {
                   onClick={() => setScheduleView("day")}
                   className={`px-3 py-1.5 text-sm font-medium border-l border-slate-300 ${scheduleView === "day" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
                 >Daily view</button>
-              </div>
-              <div className="text-xs text-slate-500">
-                {scheduleView === "week"
-                  ? "Click a role pill to assign employees."
-                  : "Pick a day, then use the dropdown in each cell to set a role."}
               </div>
             </div>
             {scheduleView === "week"
@@ -2190,6 +2289,18 @@ function TeamDailyGrid({ schedule, users, highlightUsername }) {
     return runs;
   }
 
+  // Only keep users who actually have an assignment on the selected day.
+  // (If an employee is off that day, they shouldn't fill up a row.)
+  const scheduledUsers = useMemo(() => {
+    const assigned = new Set();
+    HOURS.forEach(h => {
+      getCellAssignments(schedule, dayId, h).forEach(a => {
+        assigned.add(a.username.toLowerCase());
+      });
+    });
+    return users.filter(u => assigned.has(u.username.toLowerCase()));
+  }, [schedule, users, dayId]);
+
   return (
     <div>
       {/* Day picker */}
@@ -2209,9 +2320,9 @@ function TeamDailyGrid({ schedule, users, highlightUsername }) {
         ))}
       </div>
 
-      {users.length === 0 ? (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
-          No employees yet.
+      {scheduledUsers.length === 0 ? (
+        <div className="bg-slate-50 border border-slate-200 text-slate-600 rounded-xl p-4 text-sm">
+          No one is scheduled on {dayLabel}.
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
@@ -2229,7 +2340,7 @@ function TeamDailyGrid({ schedule, users, highlightUsername }) {
               </tr>
             </thead>
             <tbody>
-              {users.map(emp => {
+              {scheduledUsers.map(emp => {
                 const shiftId = getShiftOf(emp);
                 const runs = getRunsForEmployee(emp.username, shiftId);
                 const shiftLabel = (SHIFT_BY_ID[shiftId] || {}).label || "";
