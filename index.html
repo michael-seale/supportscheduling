@@ -215,6 +215,39 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
     setSchedule(setCellAssignments(schedule, dayId, hour, next));
   }
 
+  // Build an array of runs for a given employee across the day's HOURS.
+  // Consecutive hours with the same truthy role merge into a single run.
+  // Empty hours (role === "") always stay as their own single-hour run.
+  function getRunsForEmployee(username) {
+    const runs = [];
+    let current = null;
+    HOURS.forEach(h => {
+      const assigns = getCellAssignments(schedule, dayId, h);
+      const mine = assigns.find(a => a.username === username);
+      const role = mine ? mine.role : "";
+      if (role && current && current.role === role && current.endHour === h - 1) {
+        current.endHour = h;
+      } else {
+        current = { startHour: h, endHour: h, role };
+        runs.push(current);
+        if (!role) current = null; // don't merge empty cells
+      }
+    });
+    return runs;
+  }
+
+  // Apply a role change to every hour in a run's range.
+  function setRoleForRun(username, run, newRole) {
+    let nextSched = schedule;
+    for (let h = run.startHour; h <= run.endHour; h++) {
+      const existing = getCellAssignments(nextSched, dayId, h);
+      const withoutUser = existing.filter(a => a.username !== username);
+      const hourNext = newRole ? [...withoutUser, { username, role: newRole }] : withoutUser;
+      nextSched = setCellAssignments(nextSched, dayId, h, hourNext);
+    }
+    setSchedule(nextSched);
+  }
+
   return (
     <div>
       {/* Day picker */}
@@ -294,39 +327,57 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
               </tr>
             </thead>
             <tbody>
-              {employees.map(emp => (
-                <tr key={emp.username} className="border-t border-slate-200">
-                  <td className="p-2 bg-white border-r border-slate-200 font-medium text-slate-700 sticky left-0 z-10 whitespace-nowrap">
-                    {emp.displayName || emp.username}
-                    {emp.role === "admin" && (
-                      <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
-                    )}
-                  </td>
-                  {HOURS.map(h => {
-                    const assigns = getCellAssignments(schedule, dayId, h);
-                    const mine = assigns.find(a => a.username === emp.username);
-                    const role = mine ? mine.role : "";
-                    const roleObj = role ? ROLE_BY_ID[role] : null;
-                    const selectClass = roleObj
-                      ? `${roleObj.solid} border font-semibold`
-                      : "bg-white border-slate-200 text-slate-400";
-                    return (
-                      <td key={h} className="p-1 border-l border-slate-200 align-middle">
-                        <select
-                          value={role}
-                          onChange={(e) => setRoleForUser(emp.username, h, e.target.value)}
-                          className={`${selectClass} w-full text-xs rounded px-1 py-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-400`}
+              {employees.map(emp => {
+                const runs = getRunsForEmployee(emp.username);
+                return (
+                  <tr key={emp.username} className="border-t border-slate-200">
+                    <td className="p-2 bg-white border-r border-slate-200 font-medium text-slate-700 sticky left-0 z-10 whitespace-nowrap">
+                      {emp.displayName || emp.username}
+                      {emp.role === "admin" && (
+                        <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
+                      )}
+                    </td>
+                    {runs.map(run => {
+                      const span = run.endHour - run.startHour + 1;
+                      const role = run.role;
+                      const roleObj = role ? ROLE_BY_ID[role] : null;
+                      const isMulti = span > 1;
+                      const selectClass = roleObj
+                        ? `${roleObj.solid} border font-semibold`
+                        : "bg-white border-slate-200 text-slate-400";
+                      const rangeTitle = roleObj
+                        ? `${roleObj.label} · ${formatHour(run.startHour)}–${formatHour(run.endHour + 1)}`
+                        : "";
+                      return (
+                        <td
+                          key={run.startHour}
+                          colSpan={span}
+                          className="p-1 border-l border-slate-200 align-middle"
                         >
-                          <option value="">—</option>
-                          <option value="chat">Chat</option>
-                          <option value="phone">Phone</option>
-                          <option value="email">Email</option>
-                        </select>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+                          <div className="relative">
+                            <select
+                              value={role}
+                              onChange={(e) => setRoleForRun(emp.username, run, e.target.value)}
+                              title={rangeTitle}
+                              className={`${selectClass} w-full text-xs rounded ${isMulti ? "px-2 py-1.5" : "px-1 py-1"} cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-400`}
+                            >
+                              <option value="">—</option>
+                              <option value="chat">Chat</option>
+                              <option value="phone">Phone</option>
+                              <option value="email">Email</option>
+                            </select>
+                            {isMulti && roleObj && (
+                              <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[10px] uppercase tracking-wide opacity-90">
+                                {span}h
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
