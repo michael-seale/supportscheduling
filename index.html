@@ -102,9 +102,10 @@ const NEEDS = {
   19: { chat: 0, phone: 0, email: 1 },
 };
 
+// Session (who is currently logged in) stays local to each browser so that
+// different users on different devices can be signed in at the same time.
+// The shared users list and schedule live in the remote JSON bin below.
 const LS_KEYS = {
-  users: "sched.users.v1",
-  schedule: "sched.schedule.v1",
   session: "sched.session.v1",
 };
 
@@ -116,20 +117,66 @@ function loadJSON(key, fallback) {
 }
 function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
 
-function seedIfEmpty() {
-  const users = loadJSON(LS_KEYS.users, null);
-  if (!users) {
-    saveJSON(LS_KEYS.users, [
-      { username: "admin", password: "admin123", role: "admin", displayName: "Admin" },
-    ]);
-  }
-  const sched = loadJSON(LS_KEYS.schedule, null);
-  if (sched == null) {
-    saveJSON(LS_KEYS.schedule, {});
-  } else {
-    const migrated = migrateScheduleShape(sched);
-    if (migrated !== sched) saveJSON(LS_KEYS.schedule, migrated);
-  }
+// ---------------------------------------------------------------------------
+// Remote shared storage (JSONBin.io)
+//
+// SETUP (one-time, by whoever hosts this file):
+//   1. Sign up for a free account at https://jsonbin.io
+//   2. Click "Create a Bin" and paste this as the initial JSON:
+//        {
+//          "users": [
+//            { "username": "admin", "password": "admin123",
+//              "role": "admin", "displayName": "Admin", "shift": "eastern" }
+//          ],
+//          "schedule": {},
+//          "version": 0
+//        }
+//   3. Copy the Bin ID (shown on the bin's page, e.g. 68fb1c2ca41ac40f3c7f12345)
+//      and paste it into `binId` below.
+//   4. Open "API Keys" in the left sidebar, copy your X-MASTER-KEY, and paste
+//      it into `apiKey` below.
+//   5. Save this HTML and share it with your team.
+//
+// This key is visible to anyone who views the page source. That's okay for
+// a trusted internal team with no sensitive data, but don't use this key
+// for other bins you care about.
+// ---------------------------------------------------------------------------
+const JSONBIN_CONFIG = {
+  binId: "69e26d9daaba8821970dc5f1",
+  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+};
+const REMOTE_POLL_MS = 10000;
+const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
+
+function isJsonbinConfigured() {
+  return !!(JSONBIN_CONFIG.binId && JSONBIN_CONFIG.apiKey);
+}
+async function fetchRemote() {
+  const res = await fetch(`${JSONBIN_BASE}/${JSONBIN_CONFIG.binId}/latest`, {
+    method: "GET",
+    headers: { "X-Master-Key": JSONBIN_CONFIG.apiKey },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  const record = data.record || {};
+  return {
+    users: Array.isArray(record.users) ? record.users : [],
+    schedule: (record.schedule && typeof record.schedule === "object" && !Array.isArray(record.schedule)) ? record.schedule : {},
+    version: typeof record.version === "number" ? record.version : 0,
+  };
+}
+async function putRemote(state) {
+  const res = await fetch(`${JSONBIN_BASE}/${JSONBIN_CONFIG.binId}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Master-Key": JSONBIN_CONFIG.apiKey,
+    },
+    body: JSON.stringify(state),
+  });
+  if (!res.ok) throw new Error(`PUT failed: ${res.status} ${res.statusText}`);
+  return res.json();
 }
 
 function formatHour(h) {
@@ -188,24 +235,142 @@ function migrateScheduleShape(raw) {
   return { [key]: raw };
 }
 
-function useLocalState(key, fallback) {
-  const [val, setVal] = useState(() => loadJSON(key, fallback));
-  useEffect(() => { saveJSON(key, val); }, [key, val]);
-  return [val, setVal];
+// ---------------------------------------------------------------------------
+// Shared state via React Context. One SharedStateProvider at the top of the
+// tree is responsible for:
+//   - Fetching { users, schedule, version } from the JSON bin on mount
+//   - Polling every REMOTE_POLL_MS and applying changes with a higher version
+//   - Accepting writes (setUsers / setSchedule) and PUTting the full state
+//
+// Concurrency model: last write wins. Each write bumps `version`. Polls that
+// return an older or equal version are ignored, so a PUT in flight can't be
+// clobbered by a poll that happens to return stale data.
+// ---------------------------------------------------------------------------
+const SharedStateContext = React.createContext(null);
+
+function SharedStateProvider({ children }) {
+  // Combine users + schedule in one useState so functional updates always see
+  // the latest values for BOTH, even if setUsers and setSchedule are both
+  // called in the same event handler.
+  const [appState, setAppState] = useState({ users: [], schedule: {} });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [writing, setWriting] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
+
+  const versionRef = React.useRef(0);
+  const writeQueueRef = React.useRef(Promise.resolve());
+  const inFlightWritesRef = React.useRef(0);
+
+  // Initial fetch.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchRemote();
+        if (cancelled) return;
+        versionRef.current = remote.version;
+        setAppState({ users: remote.users, schedule: migrateScheduleShape(remote.schedule) });
+        setLastSync(Date.now());
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError(e.message || "Failed to load shared data.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Poll for changes from other browsers.
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (inFlightWritesRef.current > 0) return; // don't clobber in-flight writes
+      try {
+        const remote = await fetchRemote();
+        setLastSync(Date.now());
+        if (remote.version > versionRef.current) {
+          versionRef.current = remote.version;
+          setAppState({ users: remote.users, schedule: migrateScheduleShape(remote.schedule) });
+        }
+        setError(null);
+      } catch (e) {
+        setError(e.message || "Sync error");
+      }
+    }, REMOTE_POLL_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // Queue writes so rapid consecutive changes PUT in order rather than racing.
+  function enqueueWrite(nextState) {
+    inFlightWritesRef.current += 1;
+    setWriting(true);
+    const newVersion = versionRef.current + 1;
+    versionRef.current = newVersion;
+    const payload = { users: nextState.users, schedule: nextState.schedule, version: newVersion };
+    writeQueueRef.current = writeQueueRef.current.then(async () => {
+      try {
+        await putRemote(payload);
+        setLastSync(Date.now());
+        setError(null);
+      } catch (e) {
+        setError(e.message || "Save failed — your change may not have reached the server.");
+      } finally {
+        inFlightWritesRef.current -= 1;
+        if (inFlightWritesRef.current === 0) setWriting(false);
+      }
+    });
+    return writeQueueRef.current;
+  }
+
+  function setUsers(nextOrFn) {
+    setAppState(prev => {
+      const nextUsers = typeof nextOrFn === "function" ? nextOrFn(prev.users) : nextOrFn;
+      const next = { ...prev, users: nextUsers };
+      enqueueWrite(next);
+      return next;
+    });
+  }
+  function setSchedule(nextOrFn) {
+    setAppState(prev => {
+      const nextSchedule = typeof nextOrFn === "function" ? nextOrFn(prev.schedule) : nextOrFn;
+      const next = { ...prev, schedule: nextSchedule };
+      enqueueWrite(next);
+      return next;
+    });
+  }
+
+  async function refreshNow() {
+    try {
+      const remote = await fetchRemote();
+      versionRef.current = Math.max(versionRef.current, remote.version);
+      setAppState({ users: remote.users, schedule: migrateScheduleShape(remote.schedule) });
+      setLastSync(Date.now());
+      setError(null);
+    } catch (e) {
+      setError(e.message || "Sync error");
+    }
+  }
+
+  const value = {
+    users: appState.users,
+    schedule: appState.schedule,
+    setUsers,
+    setSchedule,
+    loading,
+    error,
+    writing,
+    lastSync,
+    refreshNow,
+  };
+  return <SharedStateContext.Provider value={value}>{children}</SharedStateContext.Provider>;
 }
 
-// Run schedule-shape migration once at module load, before any component reads
-// localStorage via useLocalState(). This handles users who already have a
-// saved session and will mount AdminApp/EmployeeApp on first paint.
-(function runInitialMigration() {
-  try {
-    const existing = loadJSON(LS_KEYS.schedule, null);
-    if (existing != null) {
-      const migrated = migrateScheduleShape(existing);
-      if (migrated !== existing) saveJSON(LS_KEYS.schedule, migrated);
-    }
-  } catch (e) { /* ignore */ }
-})();
+function useShared() {
+  const ctx = React.useContext(SharedStateContext);
+  if (!ctx) throw new Error("useShared must be used inside SharedStateProvider");
+  return ctx;
+}
 
 function getCellAssignments(schedule, dayId, hour) {
   return (schedule && schedule[dayId] && schedule[dayId][hour]) ? schedule[dayId][hour] : [];
@@ -220,13 +385,13 @@ function setCellAssignments(schedule, dayId, hour, assignments) {
 }
 
 function LoginView({ onLogin }) {
+  const { users } = useShared();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   function submit(e) {
     e.preventDefault();
-    const users = loadJSON(LS_KEYS.users, []);
     const u = users.find(x =>
       x.username.toLowerCase() === username.trim().toLowerCase() &&
       x.password === password
@@ -852,6 +1017,7 @@ function TopBar({ session, onLogout, title }) {
       <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
         <div className="text-lg font-semibold text-slate-800">{title}</div>
         <div className="text-sm text-slate-600 flex items-center gap-3">
+          <ConnectionBadge />
           <span>Signed in as <span className="font-medium">{session.username}</span></span>
           <button onClick={onLogout} className="text-sm text-blue-600 hover:text-blue-800">Sign out</button>
         </div>
@@ -900,8 +1066,7 @@ function WeekSelector({ weekStart, onChange }) {
 }
 
 function AdminApp({ session, onLogout }) {
-  const [users, setUsers] = useLocalState(LS_KEYS.users, []);
-  const [fullSchedule, setFullSchedule] = useLocalState(LS_KEYS.schedule, {});
+  const { users, setUsers, schedule: fullSchedule, setSchedule: setFullSchedule } = useShared();
   const [tab, setTab] = useState("schedule");
   const employees = useMemo(() => users, [users]);
   const [previewUsername, setPreviewUsername] = useState("");
@@ -1308,8 +1473,7 @@ function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
 }
 
 function EmployeeApp({ session, onLogout }) {
-  const [fullSchedule] = useLocalState(LS_KEYS.schedule, {});
-  const [users] = useLocalState(LS_KEYS.users, []);
+  const { users, schedule: fullSchedule } = useShared();
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
   const weekKey = toDateKey(weekStart);
   const schedule = fullSchedule[weekKey] || {};
@@ -1381,13 +1545,106 @@ function EmployeeApp({ session, onLogout }) {
   );
 }
 
-function App() {
+function SetupView() {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="bg-white shadow-md rounded-xl p-8 w-full max-w-xl border border-slate-200">
+        <h1 className="text-2xl font-semibold text-slate-800 mb-2">Team Scheduler — Setup needed</h1>
+        <p className="text-sm text-slate-600 mb-4">
+          This app shares its schedule across users via a free JSONBin.io bin. Before the app can load, the person hosting this file needs to fill in two values near the top of the HTML:
+        </p>
+        <ol className="list-decimal list-inside text-sm text-slate-700 space-y-1 mb-4">
+          <li>Create a free account at <span className="font-mono">jsonbin.io</span>.</li>
+          <li>Create a new bin with this initial content:
+            <pre className="bg-slate-100 border border-slate-200 rounded-md p-3 mt-1 text-[11px] overflow-x-auto">{`{
+  "users": [
+    { "username": "admin", "password": "admin123",
+      "role": "admin", "displayName": "Admin", "shift": "eastern" }
+  ],
+  "schedule": {},
+  "version": 0
+}`}</pre>
+          </li>
+          <li>Open the HTML file, find <span className="font-mono">JSONBIN_CONFIG</span>, and paste in your Bin ID and X-Master-Key.</li>
+          <li>Save and reload.</li>
+        </ol>
+        <p className="text-xs text-slate-500">
+          The master key will be visible in the HTML source. That's fine for a trusted internal team with no sensitive data — just don't reuse that key for other bins you care about.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function LoadingView({ message }) {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="text-sm text-slate-500">{message || "Loading…"}</div>
+    </div>
+  );
+}
+
+function ConnectionBadge() {
+  const { writing, error, lastSync, refreshNow } = useShared();
+  let label, color;
+  if (error) { label = "Offline"; color = "bg-red-50 text-red-700 border-red-200"; }
+  else if (writing) { label = "Saving…"; color = "bg-blue-50 text-blue-700 border-blue-200"; }
+  else { label = "Synced"; color = "bg-green-50 text-green-700 border-green-200"; }
+  const syncText = lastSync ? new Date(lastSync).toLocaleTimeString() : "—";
+  const title = error
+    ? `${error}\nLast successful sync: ${syncText}\nClick to retry.`
+    : `Last sync: ${syncText}\nClick to refresh now.`;
+  return (
+    <button
+      onClick={refreshNow}
+      title={title}
+      className={`text-[11px] font-medium border rounded-full px-2 py-0.5 ${color} hover:opacity-80 transition`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function AppInner() {
+  const { loading, error, users } = useShared();
   const [session, setSession] = useState(() => loadJSON(LS_KEYS.session, null));
-  useEffect(() => { seedIfEmpty(); }, []);
+
+  // If the signed-in user no longer exists in the shared user list, sign out.
+  useEffect(() => {
+    if (!session || loading) return;
+    const stillExists = users.some(u => u.username.toLowerCase() === session.username.toLowerCase());
+    if (!stillExists) {
+      localStorage.removeItem(LS_KEYS.session);
+      setSession(null);
+    }
+  }, [users, loading, session]);
+
   function handleLogout() { localStorage.removeItem(LS_KEYS.session); setSession(null); }
+
+  if (loading) return <LoadingView message="Connecting to shared schedule…" />;
+  if (error && users.length === 0) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white shadow-md rounded-xl p-8 w-full max-w-md border border-red-200">
+          <h1 className="text-xl font-semibold text-red-700 mb-2">Couldn't reach shared storage</h1>
+          <p className="text-sm text-slate-600 mb-4">{error}</p>
+          <p className="text-xs text-slate-500">Check the Bin ID and API key near the top of the HTML, and that the device is online.</p>
+        </div>
+      </div>
+    );
+  }
   if (!session) return <LoginView onLogin={setSession} />;
   if (session.role === "admin") return <AdminApp session={session} onLogout={handleLogout} />;
   return <EmployeeApp session={session} onLogout={handleLogout} />;
+}
+
+function App() {
+  if (!isJsonbinConfigured()) return <SetupView />;
+  return (
+    <SharedStateProvider>
+      <AppInner />
+    </SharedStateProvider>
+  );
 }
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
