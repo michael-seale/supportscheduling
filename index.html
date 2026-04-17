@@ -27,9 +27,24 @@
 const { useState, useEffect, useMemo } = React;
 
 const ROLES = [
-  { id: "chat",  label: "Chat",  color: "bg-blue-100 text-blue-800 border-blue-300" },
-  { id: "phone", label: "Phone", color: "bg-purple-100 text-purple-800 border-purple-300" },
-  { id: "email", label: "Email", color: "bg-amber-100 text-amber-800 border-amber-300" },
+  {
+    id: "chat",  label: "Chat",
+    color: "bg-orange-100 text-orange-800 border-orange-300",
+    solid: "bg-orange-500 text-white border-orange-600",
+    light: "bg-orange-50 text-orange-700 border-orange-300",
+  },
+  {
+    id: "phone", label: "Phone",
+    color: "bg-blue-100 text-blue-800 border-blue-300",
+    solid: "bg-blue-600 text-white border-blue-700",
+    light: "bg-blue-50 text-blue-700 border-blue-300",
+  },
+  {
+    id: "email", label: "Email",
+    color: "bg-green-100 text-green-800 border-green-300",
+    solid: "bg-green-600 text-white border-green-700",
+    light: "bg-green-50 text-green-700 border-green-300",
+  },
 ];
 const ROLE_BY_ID = Object.fromEntries(ROLES.map(r => [r.id, r]));
 
@@ -150,7 +165,7 @@ function LoginView({ onLogin }) {
 }
 
 function ScheduleGrid({ schedule, setSchedule, employees }) {
-  const [editing, setEditing] = useState(null);
+  const [editing, setEditing] = useState(null); // { dayId, hour, role }
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
       <div className="grid" style={{ gridTemplateColumns: "90px repeat(5, minmax(0, 1fr))" }}>
@@ -164,146 +179,176 @@ function ScheduleGrid({ schedule, setSchedule, employees }) {
             {DAYS.map(d => (
               <ScheduleCell key={`${d.id}-${h}`} dayId={d.id} hour={h}
                 assignments={getCellAssignments(schedule, d.id, h)}
-                onEdit={() => setEditing({ dayId: d.id, hour: h })} />
+                onEditRole={(role) => setEditing({ dayId: d.id, hour: h, role })} />
             ))}
           </React.Fragment>
         ))}
       </div>
       {editing && (
-        <AssignModal dayId={editing.dayId} hour={editing.hour} schedule={schedule} employees={employees}
+        <RoleAssignModal
+          dayId={editing.dayId}
+          hour={editing.hour}
+          role={editing.role}
+          schedule={schedule}
+          employees={employees}
           onClose={() => setEditing(null)}
           onSave={(assignments) => {
             setSchedule(setCellAssignments(schedule, editing.dayId, editing.hour, assignments));
             setEditing(null);
-          }} />
+          }}
+        />
       )}
     </div>
   );
 }
 
-function ScheduleCell({ dayId, hour, assignments, onEdit }) {
+function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
   const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
-  const assigned = { chat: 0, phone: 0, email: 0 };
-  assignments.forEach(a => { assigned[a.role] = (assigned[a.role] || 0) + 1; });
-  const hasAnyNeed = ROLES.some(r => needs[r.id] > 0);
-  const hasAssignments = assignments.length > 0;
+  const assignedByRole = { chat: [], phone: [], email: [] };
+  assignments.forEach(a => {
+    if (!assignedByRole[a.role]) assignedByRole[a.role] = [];
+    assignedByRole[a.role].push(a.username);
+  });
+
   return (
-    <div onClick={onEdit} className="border-b border-l border-slate-200 p-2 text-xs min-h-[72px] cursor-pointer hover:bg-slate-50 transition">
-      {hasAssignments && (
-        <div className="flex flex-col gap-1 mb-1">
-          {assignments.map((a, i) => (
-            <div key={i} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] ${(ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].color) || ""}`}>
-              <span className="font-medium">{a.username}</span>
-              <span className="opacity-70">· {ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].label}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {hasAnyNeed && (
-        <div className="flex flex-col gap-0.5">
-          {ROLES.map(r => {
-            const need = needs[r.id];
-            if (!need) return null;
-            const have = assigned[r.id] || 0;
-            const filled = have >= need;
-            return (
-              <div key={r.id} className={`text-[11px] ${filled ? "text-green-700" : "text-slate-500"}`} title={`${have}/${need} ${r.label}`}>
-                {filled ? "✓" : "•"} {have}/{need} {r.label}
+    <div className="border-b border-l border-slate-200 p-1.5 min-h-[72px]">
+      <div className="flex flex-col gap-1">
+        {ROLES.map(r => {
+          const need = needs[r.id] || 0;
+          const names = assignedByRole[r.id] || [];
+          const have = names.length;
+
+          // Style states:
+          //  - filled: solid color (have >= need && need > 0), or any assignments when need == 0
+          //  - partial: light color (0 < have < need)
+          //  - empty-with-need: light color (need > 0, have == 0)
+          //  - zero/zero: muted (need == 0 && have == 0) — still clickable
+          let btnClass;
+          if ((need > 0 && have >= need) || (need === 0 && have > 0)) {
+            btnClass = r.solid;
+          } else if (need > 0 || have > 0) {
+            btnClass = r.light;
+          } else {
+            btnClass = "bg-slate-50 text-slate-400 border-slate-200";
+          }
+
+          const countText = need > 0 ? `${have}/${need}` : `${have}`;
+
+          return (
+            <button
+              key={r.id}
+              onClick={() => onEditRole(r.id)}
+              title={`${have} of ${need} ${r.label} assigned — click to edit`}
+              className={`${btnClass} border text-left w-full px-2 py-1 rounded text-[11px] hover:opacity-80 transition`}
+            >
+              <div className="flex items-center justify-between gap-1">
+                <span className="font-semibold">{r.label}</span>
+                <span className="tabular-nums">{countText}</span>
               </div>
-            );
-          })}
-        </div>
-      )}
-      {!hasAnyNeed && !hasAssignments && (
-        <div className="text-[11px] text-slate-300 italic">No needs</div>
-      )}
+              {names.length > 0 && (
+                <div className="text-[10px] mt-0.5 opacity-90 truncate">
+                  {names.join(", ")}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-function AssignModal({ dayId, hour, schedule, employees, onClose, onSave }) {
+function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSave }) {
   const existing = getCellAssignments(schedule, dayId, hour);
-  const [draft, setDraft] = useState(existing);
-  const [newUsername, setNewUsername] = useState(employees[0] ? employees[0].username : "");
-  const [newRole, setNewRole] = useState("chat");
-  const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
-  const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
-  const assigned = { chat: 0, phone: 0, email: 0 };
-  draft.forEach(a => { assigned[a.role] = (assigned[a.role] || 0) + 1; });
+  const currentForRole = existing.filter(a => a.role === role).map(a => a.username);
+  const [selected, setSelected] = useState(() => new Set(currentForRole));
 
-  function addAssignment() {
-    if (!newUsername) return;
-    if (draft.some(a => a.username === newUsername)) return;
-    setDraft([...draft, { username: newUsername, role: newRole }]);
+  // Map of username -> other role they're on at this hour (if any)
+  const otherRole = {};
+  existing.forEach(a => { if (a.role !== role) otherRole[a.username] = a.role; });
+
+  const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
+  const roleObj = ROLE_BY_ID[role] || { label: role };
+  const need = (NEEDS[hour] || {})[role] || 0;
+
+  function toggle(username) {
+    const next = new Set(selected);
+    if (next.has(username)) next.delete(username);
+    else next.add(username);
+    setSelected(next);
   }
-  function removeAssignment(idx) { setDraft(draft.filter((_, i) => i !== idx)); }
+
+  function save() {
+    const kept = existing.filter(a => a.role !== role);
+    const added = Array.from(selected).map(username => ({ username, role }));
+    onSave([...kept, ...added]);
+  }
+
+  const have = selected.size;
+  const meetsNeed = need === 0 || have >= need;
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-lg font-semibold text-slate-800">{dayLabel} · {hourRangeLabel(hour)} ET</h3>
-        <p className="text-sm text-slate-500 mb-4">Assign employees to this hour.</p>
-
-        <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mb-4">
-          <div className="text-xs font-semibold text-slate-600 uppercase mb-1">Coverage needs</div>
-          <div className="flex flex-wrap gap-2">
-            {ROLES.map(r => {
-              const need = needs[r.id];
-              if (!need) return null;
-              const have = assigned[r.id] || 0;
-              const ok = have >= need;
-              return (
-                <span key={r.id} className={`text-xs px-2 py-0.5 rounded-full border ${ok ? "bg-green-50 border-green-300 text-green-700" : "bg-white border-slate-300 text-slate-600"}`}>
-                  {r.label}: {have}/{need}
-                </span>
-              );
-            })}
-            {!ROLES.some(r => needs[r.id] > 0) && (
-              <span className="text-xs text-slate-500">No required coverage this hour.</span>
-            )}
-          </div>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-1">
+          <h3 className="text-lg font-semibold text-slate-800">
+            {dayLabel} · {hourRangeLabel(hour)}
+          </h3>
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${roleObj.solid}`}>
+            {roleObj.label}
+          </span>
         </div>
-
-        <div className="mb-4">
-          <div className="text-xs font-semibold text-slate-600 uppercase mb-2">Assigned</div>
-          {draft.length === 0 && <div className="text-sm text-slate-400 italic">No one assigned.</div>}
-          <div className="flex flex-col gap-1">
-            {draft.map((a, i) => (
-              <div key={i} className="flex items-center justify-between bg-slate-50 rounded-md px-3 py-1.5">
-                <div className="text-sm">
-                  <span className="font-medium">{a.username}</span>
-                  <span className="text-slate-500"> · {ROLE_BY_ID[a.role] && ROLE_BY_ID[a.role].label}</span>
-                </div>
-                <button onClick={() => removeAssignment(i)} className="text-xs text-red-600 hover:text-red-800">Remove</button>
-              </div>
-            ))}
-          </div>
-        </div>
+        <p className="text-sm text-slate-500 mb-4">
+          {need > 0
+            ? <span>{have}/{need} assigned {meetsNeed && <span className="text-green-700">· fully staffed</span>}</span>
+            : <span>{have} assigned · no minimum for this hour</span>}
+        </p>
 
         {employees.length === 0 ? (
           <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3 mb-4">
-            No employees yet. Add them on the Employees tab.
+            No users yet. Add them on the Employees tab.
           </div>
         ) : (
-          <div className="flex gap-2 mb-4">
-            <select value={newUsername} onChange={e => setNewUsername(e.target.value)}
-              className="flex-1 border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              {employees.map(emp => (
-                <option key={emp.username} value={emp.username}>{emp.displayName || emp.username}</option>
-              ))}
-            </select>
-            <select value={newRole} onChange={e => setNewRole(e.target.value)}
-              className="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              {ROLES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
-            </select>
-            <button onClick={addAssignment}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm font-medium">Add</button>
+          <div className="max-h-80 overflow-y-auto border border-slate-200 rounded-md mb-4">
+            {employees.map(emp => {
+              const busyOn = otherRole[emp.username];
+              const isBusy = !!busyOn;
+              const isSelected = selected.has(emp.username);
+              const busyLabel = isBusy && ((ROLE_BY_ID[busyOn] || {}).label || busyOn);
+              return (
+                <label
+                  key={emp.username}
+                  className={`flex items-center gap-3 px-3 py-2 border-b last:border-b-0 border-slate-100 ${
+                    isBusy ? "opacity-60 cursor-not-allowed bg-slate-50" : "cursor-pointer hover:bg-slate-50"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={isBusy}
+                    checked={isSelected}
+                    onChange={() => !isBusy && toggle(emp.username)}
+                    className="w-4 h-4"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-slate-800">
+                      {emp.displayName || emp.username}
+                      {emp.role === "admin" && (
+                        <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
+                      )}
+                    </div>
+                    {isBusy && (
+                      <div className="text-xs text-slate-500">Already on {busyLabel} this hour</div>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
           </div>
         )}
 
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">Cancel</button>
-          <button onClick={() => onSave(draft)}
+          <button onClick={save}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">Save</button>
         </div>
       </div>
