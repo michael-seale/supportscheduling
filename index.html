@@ -26,40 +26,63 @@
   <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
 
-const ROLES = [
-  {
-    id: "chat",  label: "Chat", isCoverage: true,
-    color: "bg-orange-100 text-orange-800 border-orange-300",
-    solid: "bg-orange-500 text-white border-orange-600",
-    light: "bg-orange-50 text-orange-700 border-orange-300",
-  },
-  {
-    id: "phone", label: "Phone", isCoverage: true,
-    color: "bg-blue-100 text-blue-800 border-blue-300",
-    solid: "bg-blue-600 text-white border-blue-700",
-    light: "bg-blue-50 text-blue-700 border-blue-300",
-  },
-  {
-    id: "email", label: "Email", isCoverage: true,
-    color: "bg-green-100 text-green-800 border-green-300",
-    solid: "bg-green-600 text-white border-green-700",
-    light: "bg-green-50 text-green-700 border-green-300",
-  },
-  {
-    id: "lunch", label: "Lunch", isCoverage: false,
-    color: "bg-purple-100 text-purple-800 border-purple-300",
-    solid: "bg-purple-600 text-white border-purple-700",
-    light: "bg-purple-50 text-purple-700 border-purple-300",
-  },
-  {
-    id: "meeting", label: "Meeting", isCoverage: false,
-    color: "bg-red-100 text-red-800 border-red-300",
-    solid: "bg-red-600 text-white border-red-700",
-    light: "bg-red-50 text-red-700 border-red-300",
-  },
+// Color palette for roles. Classes are pre-baked so Tailwind's CDN JIT picks
+// them up (it can't handle arbitrary runtime-generated class names).
+// Each palette entry has:
+//   base  — muted background used on badge pills
+//   solid — filled color used when a cell is "assigned" or a pill is "met"
+//   light — washed color used for partial / empty-with-need states
+//   swatch — a small bg-only class for color-picker swatches
+const COLOR_PALETTE = {
+  orange: { base: "bg-orange-100 text-orange-800 border-orange-300", solid: "bg-orange-500 text-white border-orange-600", light: "bg-orange-50 text-orange-700 border-orange-300", swatch: "bg-orange-500" },
+  blue:   { base: "bg-blue-100 text-blue-800 border-blue-300",       solid: "bg-blue-600 text-white border-blue-700",     light: "bg-blue-50 text-blue-700 border-blue-300",       swatch: "bg-blue-600" },
+  green:  { base: "bg-green-100 text-green-800 border-green-300",    solid: "bg-green-600 text-white border-green-700",   light: "bg-green-50 text-green-700 border-green-300",    swatch: "bg-green-600" },
+  purple: { base: "bg-purple-100 text-purple-800 border-purple-300", solid: "bg-purple-600 text-white border-purple-700", light: "bg-purple-50 text-purple-700 border-purple-300", swatch: "bg-purple-600" },
+  red:    { base: "bg-red-100 text-red-800 border-red-300",          solid: "bg-red-600 text-white border-red-700",       light: "bg-red-50 text-red-700 border-red-300",          swatch: "bg-red-600" },
+  yellow: { base: "bg-yellow-100 text-yellow-800 border-yellow-300", solid: "bg-yellow-500 text-white border-yellow-600", light: "bg-yellow-50 text-yellow-700 border-yellow-300", swatch: "bg-yellow-500" },
+  pink:   { base: "bg-pink-100 text-pink-800 border-pink-300",       solid: "bg-pink-600 text-white border-pink-700",     light: "bg-pink-50 text-pink-700 border-pink-300",       swatch: "bg-pink-600" },
+  indigo: { base: "bg-indigo-100 text-indigo-800 border-indigo-300", solid: "bg-indigo-600 text-white border-indigo-700", light: "bg-indigo-50 text-indigo-700 border-indigo-300", swatch: "bg-indigo-600" },
+  teal:   { base: "bg-teal-100 text-teal-800 border-teal-300",       solid: "bg-teal-600 text-white border-teal-700",     light: "bg-teal-50 text-teal-700 border-teal-300",       swatch: "bg-teal-600" },
+  slate:  { base: "bg-slate-100 text-slate-800 border-slate-300",    solid: "bg-slate-600 text-white border-slate-700",   light: "bg-slate-50 text-slate-700 border-slate-300",    swatch: "bg-slate-600" },
+};
+const COLOR_NAMES = Object.keys(COLOR_PALETTE);
+const DEFAULT_COLOR = "slate";
+
+// Default roles used only when the shared bin has no `roles` array yet.
+const DEFAULT_ROLES = [
+  { id: "chat",    label: "Chat",    isCoverage: true,  color: "orange" },
+  { id: "phone",   label: "Phone",   isCoverage: true,  color: "blue" },
+  { id: "email",   label: "Email",   isCoverage: true,  color: "green" },
+  { id: "lunch",   label: "Lunch",   isCoverage: false, color: "purple" },
+  { id: "meeting", label: "Meeting", isCoverage: false, color: "red" },
 ];
-const COVERAGE_ROLES = ROLES.filter(r => r.isCoverage);
-const ROLE_BY_ID = Object.fromEntries(ROLES.map(r => [r.id, r]));
+
+// Decorate a role (id/label/isCoverage/color) with the class strings the UI
+// expects (color/solid/light) by looking up the palette.
+function decorateRole(role) {
+  const pal = COLOR_PALETTE[role.color] || COLOR_PALETTE[DEFAULT_COLOR];
+  return {
+    ...role,
+    color: pal.base,
+    solid: pal.solid,
+    light: pal.light,
+    colorName: role.color || DEFAULT_COLOR,
+  };
+}
+
+// Slugify a label into a stable, filesystem-safe ID.
+function slugifyRoleId(label, existingIds) {
+  const base = String(label).trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 30) || "role";
+  if (!existingIds.includes(base)) return base;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${base}-${n}`;
+    if (!existingIds.includes(candidate)) return candidate;
+  }
+  return `${base}-${Date.now()}`;
+}
 
 const DAYS = [
   { id: "mon", label: "Monday" },
@@ -142,8 +165,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -162,6 +185,7 @@ async function fetchRemote() {
   const record = data.record || {};
   return {
     users: Array.isArray(record.users) ? record.users : [],
+    roles: (Array.isArray(record.roles) && record.roles.length > 0) ? record.roles : DEFAULT_ROLES,
     schedule: (record.schedule && typeof record.schedule === "object" && !Array.isArray(record.schedule)) ? record.schedule : {},
     version: typeof record.version === "number" ? record.version : 0,
   };
@@ -249,10 +273,10 @@ function migrateScheduleShape(raw) {
 const SharedStateContext = React.createContext(null);
 
 function SharedStateProvider({ children }) {
-  // Combine users + schedule in one useState so functional updates always see
-  // the latest values for BOTH, even if setUsers and setSchedule are both
-  // called in the same event handler.
-  const [appState, setAppState] = useState({ users: [], schedule: {} });
+  // Combine users + roles + schedule in one useState so functional updates
+  // always see the latest values for ALL of them, even if multiple setters
+  // are called in the same event handler.
+  const [appState, setAppState] = useState({ users: [], roles: DEFAULT_ROLES, schedule: {} });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [writing, setWriting] = useState(false);
@@ -270,7 +294,11 @@ function SharedStateProvider({ children }) {
         const remote = await fetchRemote();
         if (cancelled) return;
         versionRef.current = remote.version;
-        setAppState({ users: remote.users, schedule: migrateScheduleShape(remote.schedule) });
+        setAppState({
+          users: remote.users,
+          roles: remote.roles,
+          schedule: migrateScheduleShape(remote.schedule),
+        });
         setLastSync(Date.now());
         setError(null);
       } catch (e) {
@@ -291,7 +319,11 @@ function SharedStateProvider({ children }) {
         setLastSync(Date.now());
         if (remote.version > versionRef.current) {
           versionRef.current = remote.version;
-          setAppState({ users: remote.users, schedule: migrateScheduleShape(remote.schedule) });
+          setAppState({
+            users: remote.users,
+            roles: remote.roles,
+            schedule: migrateScheduleShape(remote.schedule),
+          });
         }
         setError(null);
       } catch (e) {
@@ -307,7 +339,12 @@ function SharedStateProvider({ children }) {
     setWriting(true);
     const newVersion = versionRef.current + 1;
     versionRef.current = newVersion;
-    const payload = { users: nextState.users, schedule: nextState.schedule, version: newVersion };
+    const payload = {
+      users: nextState.users,
+      roles: nextState.roles,
+      schedule: nextState.schedule,
+      version: newVersion,
+    };
     writeQueueRef.current = writeQueueRef.current.then(async () => {
       try {
         await putRemote(payload);
@@ -339,12 +376,35 @@ function SharedStateProvider({ children }) {
       return next;
     });
   }
+  function setRoles(nextOrFn) {
+    setAppState(prev => {
+      const nextRoles = typeof nextOrFn === "function" ? nextOrFn(prev.roles) : nextOrFn;
+      const next = { ...prev, roles: nextRoles };
+      enqueueWrite(next);
+      return next;
+    });
+  }
+  // Atomic update of roles + schedule together (used when deleting a role and
+  // stripping orphan assignments in one PUT).
+  function setRolesAndSchedule(nextRolesOrFn, nextScheduleOrFn) {
+    setAppState(prev => {
+      const nextRoles = typeof nextRolesOrFn === "function" ? nextRolesOrFn(prev.roles) : nextRolesOrFn;
+      const nextSchedule = typeof nextScheduleOrFn === "function" ? nextScheduleOrFn(prev.schedule) : nextScheduleOrFn;
+      const next = { ...prev, roles: nextRoles, schedule: nextSchedule };
+      enqueueWrite(next);
+      return next;
+    });
+  }
 
   async function refreshNow() {
     try {
       const remote = await fetchRemote();
       versionRef.current = Math.max(versionRef.current, remote.version);
-      setAppState({ users: remote.users, schedule: migrateScheduleShape(remote.schedule) });
+      setAppState({
+        users: remote.users,
+        roles: remote.roles,
+        schedule: migrateScheduleShape(remote.schedule),
+      });
       setLastSync(Date.now());
       setError(null);
     } catch (e) {
@@ -352,11 +412,23 @@ function SharedStateProvider({ children }) {
     }
   }
 
+  // Memoize decorated roles (with class strings) so identity is stable unless
+  // the underlying roles array actually changes.
+  const rolesDecorated = useMemo(() => appState.roles.map(decorateRole), [appState.roles]);
+  const rolesById = useMemo(() => Object.fromEntries(rolesDecorated.map(r => [r.id, r])), [rolesDecorated]);
+  const coverageRoles = useMemo(() => rolesDecorated.filter(r => r.isCoverage), [rolesDecorated]);
+
   const value = {
     users: appState.users,
     schedule: appState.schedule,
+    roles: rolesDecorated,
+    rolesRaw: appState.roles,  // minimal-shape roles for writing back
+    rolesById,
+    coverageRoles,
     setUsers,
     setSchedule,
+    setRoles,
+    setRolesAndSchedule,
     loading,
     error,
     writing,
@@ -465,6 +537,7 @@ function ScheduleGrid({ schedule, setSchedule, employees }) {
 }
 
 function DailyScheduleView({ schedule, setSchedule, employees }) {
+  const { roles, rolesById, coverageRoles } = useShared();
   const [dayId, setDayId] = useState("mon");
   const [editing, setEditing] = useState(null); // { hour, role } for needs-pill modal
 
@@ -572,7 +645,7 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                   return (
                     <td key={h} className="bg-slate-50 border-b border-l border-slate-200 p-1 align-top">
                       <div className="flex flex-col gap-1">
-                        {COVERAGE_ROLES.map(r => {
+                        {coverageRoles.map(r => {
                           const need = needs[r.id] || 0;
                           const have = counts[r.id] || 0;
                           const filled = (need > 0 && have >= need) || (need === 0 && have > 0);
@@ -628,7 +701,7 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                         );
                       }
                       const role = run.role;
-                      const roleObj = role ? ROLE_BY_ID[role] : null;
+                      const roleObj = role ? rolesById[role] : null;
                       const isMulti = span > 1;
                       const selectClass = roleObj
                         ? `${roleObj.solid} border font-semibold`
@@ -650,7 +723,7 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
                               className={`${selectClass} w-full text-xs rounded ${isMulti ? "px-2 py-1.5" : "px-1 py-1"} cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-400`}
                             >
                               <option value="">—</option>
-                              {ROLES.map(r => (
+                              {roles.map(r => (
                                 <option key={r.id} value={r.id}>{r.label}</option>
                               ))}
                             </select>
@@ -690,9 +763,10 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
 }
 
 function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
+  const { roles, coverageRoles } = useShared();
   const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
   const assignedByRole = {};
-  ROLES.forEach(r => { assignedByRole[r.id] = []; });
+  roles.forEach(r => { assignedByRole[r.id] = []; });
   assignments.forEach(a => {
     if (!assignedByRole[a.role]) assignedByRole[a.role] = [];
     assignedByRole[a.role].push(a.username);
@@ -701,7 +775,7 @@ function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
   return (
     <div className="border-b border-l border-slate-200 p-1.5 min-h-[72px]">
       <div className="flex flex-col gap-1">
-        {COVERAGE_ROLES.map(r => {
+        {coverageRoles.map(r => {
           const need = needs[r.id] || 0;
           const names = assignedByRole[r.id] || [];
           const have = names.length;
@@ -747,6 +821,7 @@ function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
 }
 
 function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSave }) {
+  const { rolesById } = useShared();
   const existing = getCellAssignments(schedule, dayId, hour);
   const currentForRole = existing.filter(a => a.role === role).map(a => a.username);
   const [selected, setSelected] = useState(() => new Set(currentForRole));
@@ -756,7 +831,7 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
   existing.forEach(a => { if (a.role !== role) otherRole[a.username] = a.role; });
 
   const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
-  const roleObj = ROLE_BY_ID[role] || { label: role };
+  const roleObj = rolesById[role] || { label: role, solid: "bg-slate-600 text-white border-slate-700" };
   const need = (NEEDS[hour] || {})[role] || 0;
 
   function toggle(username) {
@@ -805,7 +880,7 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
               const offShift = !isHourInShift(empShift, hour);
               const isDisabled = isBusy || offShift;
               const isSelected = selected.has(emp.username);
-              const busyLabel = isBusy && ((ROLE_BY_ID[busyOn] || {}).label || busyOn);
+              const busyLabel = isBusy && ((rolesById[busyOn] || {}).label || busyOn);
               const shiftLabel = (SHIFT_BY_ID[empShift] || {}).label || "";
               let note = null;
               if (isBusy) note = `Already on ${busyLabel} this hour`;
@@ -1065,6 +1140,257 @@ function WeekSelector({ weekStart, onChange }) {
   );
 }
 
+function SettingsPage({ currentUsername }) {
+  const [subTab, setSubTab] = useState("employees");
+  const { users, setUsers } = useShared();
+  return (
+    <div>
+      <div className="mb-4 border-b border-slate-200">
+        <div className="flex gap-1">
+          <TabButton active={subTab === "employees"} onClick={() => setSubTab("employees")}>Employees</TabButton>
+          <TabButton active={subTab === "roles"} onClick={() => setSubTab("roles")}>Roles</TabButton>
+        </div>
+      </div>
+      {subTab === "employees" && (
+        <EmployeesTab users={users} setUsers={setUsers} currentUsername={currentUsername} />
+      )}
+      {subTab === "roles" && <RolesTab />}
+    </div>
+  );
+}
+
+// Count how many assignments across the entire schedule reference a role ID.
+function countRoleUsage(schedule, roleId) {
+  let n = 0;
+  for (const week of Object.values(schedule || {})) {
+    for (const day of Object.values(week || {})) {
+      for (const hourAssigns of Object.values(day || {})) {
+        for (const a of (hourAssigns || [])) {
+          if (a.role === roleId) n += 1;
+        }
+      }
+    }
+  }
+  return n;
+}
+
+// Return a new schedule with all assignments for roleId removed, pruning any
+// empty hour/day/week containers so the shape stays tidy.
+function scheduleWithoutRole(schedule, roleId) {
+  const out = {};
+  for (const [weekKey, week] of Object.entries(schedule || {})) {
+    const nextWeek = {};
+    for (const [dayId, day] of Object.entries(week || {})) {
+      const nextDay = {};
+      for (const [hour, hourAssigns] of Object.entries(day || {})) {
+        const kept = (hourAssigns || []).filter(a => a.role !== roleId);
+        if (kept.length > 0) nextDay[hour] = kept;
+      }
+      if (Object.keys(nextDay).length > 0) nextWeek[dayId] = nextDay;
+    }
+    if (Object.keys(nextWeek).length > 0) out[weekKey] = nextWeek;
+  }
+  return out;
+}
+
+function ColorSwatch({ colorName, selected, onClick, title }) {
+  const pal = COLOR_PALETTE[colorName] || COLOR_PALETTE[DEFAULT_COLOR];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title || colorName}
+      className={`${pal.swatch} w-5 h-5 rounded-full border-2 transition ${
+        selected ? "border-slate-800 ring-2 ring-offset-1 ring-slate-400" : "border-white hover:border-slate-300"
+      }`}
+    />
+  );
+}
+
+function ColorPicker({ value, onChange }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {COLOR_NAMES.map(name => (
+        <ColorSwatch
+          key={name}
+          colorName={name}
+          selected={value === name}
+          onClick={() => onChange(name)}
+          title={name.charAt(0).toUpperCase() + name.slice(1)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RolesTab() {
+  // Read decorated `roles` for rendering and raw `rolesRaw` (with palette-name
+  // colors, not class strings) for writing back via setRoles.
+  const { roles, rolesRaw, setRoles, schedule, setRolesAndSchedule } = useShared();
+  const [newLabel, setNewLabel] = useState("");
+  const [newColor, setNewColor] = useState("indigo");
+  const [newIsCoverage, setNewIsCoverage] = useState(false);
+  const [error, setError] = useState("");
+
+  function addRole(e) {
+    e.preventDefault();
+    setError("");
+    const label = newLabel.trim();
+    if (!label) { setError("Label is required."); return; }
+    const existingIds = rolesRaw.map(r => r.id);
+    const id = slugifyRoleId(label, existingIds);
+    const existingLabels = rolesRaw.map(r => r.label.toLowerCase());
+    if (existingLabels.includes(label.toLowerCase())) {
+      setError("A role with that label already exists.");
+      return;
+    }
+    setRoles([...rolesRaw, { id, label, color: newColor, isCoverage: newIsCoverage }]);
+    setNewLabel("");
+    setNewColor("indigo");
+    setNewIsCoverage(false);
+  }
+
+  function updateRole(id, patch) {
+    setRoles(rolesRaw.map(r => r.id === id ? { ...r, ...patch } : r));
+  }
+
+  function removeRole(id) {
+    const role = rolesRaw.find(r => r.id === id);
+    if (!role) return;
+    const inUse = countRoleUsage(schedule, id);
+    const msg = inUse > 0
+      ? `"${role.label}" is used in ${inUse} scheduled assignment${inUse === 1 ? "" : "s"}. Delete the role and remove those assignments?`
+      : `Delete the role "${role.label}"?`;
+    if (!confirm(msg)) return;
+    if (inUse > 0) {
+      setRolesAndSchedule(
+        rolesRaw.filter(r => r.id !== id),
+        scheduleWithoutRole(schedule, id)
+      );
+    } else {
+      setRoles(rolesRaw.filter(r => r.id !== id));
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white border border-slate-200 rounded-xl p-6">
+        <h3 className="text-md font-semibold text-slate-800 mb-4">Add role</h3>
+        <form onSubmit={addRole} className="space-y-3">
+          <div className="flex flex-wrap items-start gap-4">
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-xs font-medium text-slate-600 mb-1">Label</label>
+              <input
+                placeholder="e.g. Training"
+                value={newLabel}
+                onChange={e => setNewLabel(e.target.value)}
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Color</label>
+              <div className="py-2">
+                <ColorPicker value={newColor} onChange={setNewColor} />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Coverage role</label>
+              <label className="inline-flex items-center gap-2 text-sm text-slate-700 py-2">
+                <input
+                  type="checkbox"
+                  checked={newIsCoverage}
+                  onChange={e => setNewIsCoverage(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span>Track on hourly coverage grid</span>
+              </label>
+            </div>
+            <div className="self-end">
+              <button className="bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium px-4 py-2">Add role</button>
+            </div>
+          </div>
+          {error && <div className="text-sm text-red-600">{error}</div>}
+          <p className="text-xs text-slate-500">
+            Coverage roles (like Chat, Phone, Email) show as pills on the schedule grid and in the per-hour coverage row. Non-coverage roles (like Lunch, Meeting) only show when assigned to an employee.
+          </p>
+        </form>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+          <h3 className="text-md font-semibold text-slate-800">Roles ({roles.length})</h3>
+        </div>
+        {roles.length === 0 ? (
+          <div className="p-6 text-sm text-slate-500 italic">No roles yet. Add one above.</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-slate-600 text-xs uppercase">
+              <tr>
+                <th className="px-4 py-2">Preview</th>
+                <th className="px-4 py-2">Label</th>
+                <th className="px-4 py-2">Color</th>
+                <th className="px-4 py-2">Coverage</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {roles.map(r => {
+                const usage = countRoleUsage(schedule, r.id);
+                return (
+                  <tr key={r.id} className="border-t border-slate-100 align-middle">
+                    <td className="px-4 py-2">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-semibold ${r.solid}`}>
+                        {r.label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <input
+                        value={r.label}
+                        onChange={e => updateRole(r.id, { label: e.target.value })}
+                        className="border border-slate-300 rounded-md px-2 py-1 text-sm w-48"
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <ColorPicker
+                        value={r.colorName}
+                        onChange={name => updateRole(r.id, { color: name })}
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={!!r.isCoverage}
+                          onChange={e => updateRole(r.id, { isCoverage: e.target.checked })}
+                          className="w-4 h-4"
+                        />
+                        <span>{r.isCoverage ? "Coverage" : "Non-coverage"}</span>
+                      </label>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <div className="flex items-center justify-end gap-3">
+                        <span className="text-xs text-slate-400">
+                          {usage > 0 ? `${usage} assignment${usage === 1 ? "" : "s"}` : "unused"}
+                        </span>
+                        <button
+                          onClick={() => removeRole(r.id)}
+                          className="text-xs text-red-600 hover:text-red-800"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AdminApp({ session, onLogout }) {
   const { users, setUsers, schedule: fullSchedule, setSchedule: setFullSchedule } = useShared();
   const [tab, setTab] = useState("schedule");
@@ -1101,9 +1427,9 @@ function AdminApp({ session, onLogout }) {
           <div className="flex gap-1">
             <TabButton active={tab === "schedule"} onClick={() => setTab("schedule")}>Schedule</TabButton>
             <TabButton active={tab === "viewer"} onClick={() => setTab("viewer")}>Schedule Viewer</TabButton>
-            <TabButton active={tab === "employees"} onClick={() => setTab("employees")}>Employees</TabButton>
+            <TabButton active={tab === "settings"} onClick={() => setTab("settings")}>Settings</TabButton>
           </div>
-          {tab !== "employees" && (
+          {tab !== "settings" && (
             <div className="pb-2">
               <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
             </div>
@@ -1141,13 +1467,14 @@ function AdminApp({ session, onLogout }) {
             setPreviewUsername={setPreviewUsername}
           />
         )}
-        {tab === "employees" && <EmployeesTab users={users} setUsers={setUsers} currentUsername={session.username} />}
+        {tab === "settings" && <SettingsPage currentUsername={session.username} />}
       </div>
     </div>
   );
 }
 
 function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewUsername }) {
+  const { rolesById } = useShared();
   const [viewerView, setViewerView] = useState("week");
   const [viewerDayId, setViewerDayId] = useState("mon");
 
@@ -1240,8 +1567,8 @@ function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewU
                   <td className="px-4 py-2 text-slate-700">{s.day.label}</td>
                   <td className="px-4 py-2 text-slate-700">{hourRangeLabel(s.hour)}</td>
                   <td className="px-4 py-2">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${ROLE_BY_ID[s.role] && ROLE_BY_ID[s.role].color}`}>
-                      {ROLE_BY_ID[s.role] && ROLE_BY_ID[s.role].label}
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${(rolesById[s.role] && rolesById[s.role].color) || "bg-slate-100 text-slate-500 border-slate-200"}`}>
+                      {(rolesById[s.role] && rolesById[s.role].label) || s.role}
                     </span>
                   </td>
                 </tr>
@@ -1294,6 +1621,7 @@ function buildEmployeeWeekPlan(schedule, username, shiftId) {
 }
 
 function EmployeeGrid({ schedule, username, shiftId }) {
+  const { rolesById } = useShared();
   const resolvedShift = shiftId || DEFAULT_SHIFT_ID;
   const plan = buildEmployeeWeekPlan(schedule, username, resolvedShift);
   return (
@@ -1325,7 +1653,7 @@ function EmployeeGrid({ schedule, username, shiftId }) {
                     </td>
                   );
                 }
-                const roleObj = cell.role ? ROLE_BY_ID[cell.role] : null;
+                const roleObj = cell.role ? rolesById[cell.role] : null;
                 if (!roleObj) {
                   return (
                     <td
@@ -1361,6 +1689,7 @@ function EmployeeGrid({ schedule, username, shiftId }) {
 }
 
 function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
+  const { rolesById } = useShared();
   const resolvedShift = shiftId || DEFAULT_SHIFT_ID;
   // Build runs across HOURS for this employee/day, merging same-role hours and
   // off-shift hours separately.
@@ -1435,7 +1764,7 @@ function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
                     </td>
                   );
                 }
-                const roleObj = run.role ? ROLE_BY_ID[run.role] : null;
+                const roleObj = run.role ? rolesById[run.role] : null;
                 if (!roleObj) {
                   return (
                     <td
@@ -1473,7 +1802,7 @@ function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
 }
 
 function EmployeeApp({ session, onLogout }) {
-  const { users, schedule: fullSchedule } = useShared();
+  const { users, schedule: fullSchedule, rolesById } = useShared();
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
   const weekKey = toDateKey(weekStart);
   const schedule = fullSchedule[weekKey] || {};
@@ -1530,8 +1859,8 @@ function EmployeeApp({ session, onLogout }) {
                     <td className="px-4 py-2 text-slate-700">{s.day.label}</td>
                     <td className="px-4 py-2 text-slate-700">{hourRangeLabel(s.hour)}</td>
                     <td className="px-4 py-2">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${ROLE_BY_ID[s.role] && ROLE_BY_ID[s.role].color}`}>
-                        {ROLE_BY_ID[s.role] && ROLE_BY_ID[s.role].label}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs ${(rolesById[s.role] && rolesById[s.role].color) || "bg-slate-100 text-slate-500 border-slate-200"}`}>
+                        {(rolesById[s.role] && rolesById[s.role].label) || s.role}
                       </span>
                     </td>
                   </tr>
