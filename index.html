@@ -216,8 +216,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -1996,6 +1996,9 @@ function CoverageNeedsEditor() {
 function ReportsTab() {
   const { users, roles, schedule: fullSchedule } = useShared();
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
+  // Default to the rolled-up Groups view so the report opens clean; the toggle
+  // in the top-right swaps to the detailed per-role breakdown.
+  const [viewMode, setViewMode] = useState("groups"); // "groups" | "roles"
   const weekKey = toDateKey(weekStart);
   const weekSchedule = fullSchedule[weekKey] || {};
 
@@ -2028,10 +2031,56 @@ function ReportsTab() {
     };
   }, [weekSchedule, roles]);
 
-  const roleColumns = [...roles, ...orphanRoleIds.map(id => ({
-    id, label: id, color: "bg-slate-100 text-slate-500 border-slate-200",
-    solid: "bg-slate-400 text-white border-slate-500", isOrphan: true,
-  }))];
+  // Columns shown in the table. In "roles" mode it's one column per role plus
+  // one per orphan role ID. In "groups" mode it's one column per named group
+  // (e.g. Chat Group, Phone Group) plus an "Ungrouped" column that absorbs
+  // both ungrouped roles and orphan role assignments so no hours get lost.
+  const displayColumns = useMemo(() => {
+    if (viewMode === "roles") {
+      return [
+        ...roles.map(r => ({
+          key: r.id,
+          label: r.label,
+          roleIds: [r.id],
+          solid: r.solid,
+          isOrphan: false,
+        })),
+        ...orphanRoleIds.map(id => ({
+          key: id,
+          label: id,
+          roleIds: [id],
+          solid: "bg-slate-400 text-white border-slate-500",
+          isOrphan: true,
+        })),
+      ];
+    }
+    const byGroup = groupRolesByGroup(roles);
+    const cols = byGroup.map(g => ({
+      key: g.name || "__ungrouped__",
+      label: g.name || "Ungrouped",
+      roleIds: g.roles.map(r => r.id),
+      isGroup: true,
+    }));
+    if (orphanRoleIds.length > 0) {
+      const ungrouped = cols.find(c => c.key === "__ungrouped__");
+      if (ungrouped) {
+        ungrouped.roleIds = [...ungrouped.roleIds, ...orphanRoleIds];
+      } else {
+        cols.push({
+          key: "__ungrouped__",
+          label: "Ungrouped",
+          roleIds: [...orphanRoleIds],
+          isGroup: true,
+        });
+      }
+    }
+    return cols;
+  }, [viewMode, roles, orphanRoleIds]);
+
+  // Sum hours for a column (roleIds) from a per-role hours map.
+  function columnHoursForRow(row, col) {
+    return col.roleIds.reduce((n, rid) => n + (row[rid] || 0), 0);
+  }
 
   function userTotal(username) {
     const row = hoursByUser[username] || {};
@@ -2042,12 +2091,41 @@ function ReportsTab() {
     <div>
       <div className="mb-4 flex items-end justify-between gap-3 flex-wrap">
         <div>
-          <h2 className="text-lg font-semibold text-slate-800">Hours by employee and role</h2>
+          <h2 className="text-lg font-semibold text-slate-800">
+            Hours by employee and {viewMode === "groups" ? "group" : "role"}
+          </h2>
           <p className="text-sm text-slate-500">
             One point = one assigned hour. Totals roll up all assignments (coverage and non-coverage) for the selected week.
           </p>
         </div>
-        <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+        <div className="flex items-center gap-2">
+          {/* Groups vs. Roles view toggle (top right, matches the rest of the app). */}
+          <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setViewMode("groups")}
+              className={`px-3 py-1 rounded transition ${
+                viewMode === "groups"
+                  ? "bg-blue-600 text-white font-medium"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              Groups
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("roles")}
+              className={`px-3 py-1 rounded transition ${
+                viewMode === "roles"
+                  ? "bg-blue-600 text-white font-medium"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              All roles
+            </button>
+          </div>
+          <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+        </div>
       </div>
 
       {users.length === 0 ? (
@@ -2060,11 +2138,17 @@ function ReportsTab() {
             <thead className="bg-slate-50 text-slate-600 text-xs uppercase">
               <tr>
                 <th className="px-4 py-2 text-left sticky left-0 bg-slate-50 z-10">Employee</th>
-                {roleColumns.map(r => (
-                  <th key={r.id} className="px-3 py-2 text-center whitespace-nowrap">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-semibold ${r.solid}`}>
-                      {r.label}{r.isOrphan ? " (deleted)" : ""}
-                    </span>
+                {displayColumns.map(col => (
+                  <th key={col.key} className="px-3 py-2 text-center whitespace-nowrap">
+                    {col.isGroup ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded border border-slate-200 bg-white text-[11px] font-semibold text-slate-700">
+                        {col.label}
+                      </span>
+                    ) : (
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-semibold ${col.solid}`}>
+                        {col.label}{col.isOrphan ? " (deleted)" : ""}
+                      </span>
+                    )}
                   </th>
                 ))}
                 <th className="px-4 py-2 text-center font-semibold">Total</th>
@@ -2084,11 +2168,11 @@ function ReportsTab() {
                       )}
                       <span className="ml-2 text-[10px] uppercase text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5">{shiftLabel}</span>
                     </td>
-                    {roleColumns.map(r => {
-                      const v = row[r.id] || 0;
+                    {displayColumns.map(col => {
+                      const v = columnHoursForRow(row, col);
                       return (
                         <td
-                          key={r.id}
+                          key={col.key}
                           className={`px-3 py-2 text-center tabular-nums ${v > 0 ? "text-slate-800" : "text-slate-300"}`}
                         >
                           {v}
@@ -2105,11 +2189,14 @@ function ReportsTab() {
             <tfoot>
               <tr className="bg-slate-50 border-t border-slate-200">
                 <td className="px-4 py-2 text-slate-600 text-xs uppercase tracking-wide sticky left-0 bg-slate-50">Total</td>
-                {roleColumns.map(r => (
-                  <td key={r.id} className="px-3 py-2 text-center font-semibold tabular-nums text-slate-700">
-                    {totalsByRole[r.id] || 0}
-                  </td>
-                ))}
+                {displayColumns.map(col => {
+                  const colTotal = col.roleIds.reduce((n, rid) => n + (totalsByRole[rid] || 0), 0);
+                  return (
+                    <td key={col.key} className="px-3 py-2 text-center font-semibold tabular-nums text-slate-700">
+                      {colTotal}
+                    </td>
+                  );
+                })}
                 <td className="px-4 py-2 text-center font-bold tabular-nums text-slate-900">{grandTotal}</td>
               </tr>
             </tfoot>
