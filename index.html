@@ -202,6 +202,154 @@ function ScheduleGrid({ schedule, setSchedule, employees }) {
   );
 }
 
+function DailyScheduleView({ schedule, setSchedule, employees }) {
+  const [dayId, setDayId] = useState("mon");
+  const [editing, setEditing] = useState(null); // { hour, role } for needs-pill modal
+
+  const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
+
+  function setRoleForUser(username, hour, newRole) {
+    const existing = getCellAssignments(schedule, dayId, hour);
+    const withoutUser = existing.filter(a => a.username !== username);
+    const next = newRole ? [...withoutUser, { username, role: newRole }] : withoutUser;
+    setSchedule(setCellAssignments(schedule, dayId, hour, next));
+  }
+
+  return (
+    <div>
+      {/* Day picker */}
+      <div className="flex flex-wrap gap-1 mb-3">
+        {DAYS.map(d => (
+          <button
+            key={d.id}
+            onClick={() => setDayId(d.id)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+              dayId === d.id
+                ? "bg-blue-600 text-white"
+                : "bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </div>
+
+      {employees.length === 0 ? (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
+          Add users on the Employees tab first, then come back here to schedule them by day.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              {/* Hour label row */}
+              <tr>
+                <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-20">
+                  {dayLabel}
+                </th>
+                {HOURS.map(h => (
+                  <th key={h} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-center text-xs font-semibold text-slate-700 whitespace-nowrap">
+                    {hourRangeLabel(h)}
+                  </th>
+                ))}
+              </tr>
+              {/* Coverage needs row */}
+              <tr>
+                <th className="bg-slate-50 border-b border-slate-200 p-2 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wide sticky left-0 z-20">
+                  Coverage
+                </th>
+                {HOURS.map(h => {
+                  const needs = NEEDS[h] || { chat: 0, phone: 0, email: 0 };
+                  const assigns = getCellAssignments(schedule, dayId, h);
+                  const counts = { chat: 0, phone: 0, email: 0 };
+                  assigns.forEach(a => { counts[a.role] = (counts[a.role] || 0) + 1; });
+                  return (
+                    <td key={h} className="bg-slate-50 border-b border-l border-slate-200 p-1 align-top">
+                      <div className="flex flex-col gap-1">
+                        {ROLES.map(r => {
+                          const need = needs[r.id] || 0;
+                          const have = counts[r.id] || 0;
+                          const filled = (need > 0 && have >= need) || (need === 0 && have > 0);
+                          let btnClass;
+                          if (filled) btnClass = r.solid;
+                          else if (need > 0 || have > 0) btnClass = r.light;
+                          else btnClass = "bg-white text-slate-400 border-slate-200";
+                          const countText = need > 0 ? `${have}/${need}` : `${have}`;
+                          return (
+                            <button
+                              key={r.id}
+                              onClick={() => setEditing({ hour: h, role: r.id })}
+                              title={`${have} of ${need} ${r.label} — click to manage`}
+                              className={`${btnClass} border rounded px-1.5 py-0.5 text-[10px] hover:opacity-80 transition flex items-center justify-between gap-1`}
+                            >
+                              <span className="font-semibold">{r.label.charAt(0)}</span>
+                              <span className="tabular-nums">{countText}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map(emp => (
+                <tr key={emp.username} className="border-t border-slate-200">
+                  <td className="p-2 bg-white border-r border-slate-200 font-medium text-slate-700 sticky left-0 z-10 whitespace-nowrap">
+                    {emp.displayName || emp.username}
+                    {emp.role === "admin" && (
+                      <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
+                    )}
+                  </td>
+                  {HOURS.map(h => {
+                    const assigns = getCellAssignments(schedule, dayId, h);
+                    const mine = assigns.find(a => a.username === emp.username);
+                    const role = mine ? mine.role : "";
+                    const roleObj = role ? ROLE_BY_ID[role] : null;
+                    const selectClass = roleObj
+                      ? `${roleObj.solid} border font-semibold`
+                      : "bg-white border-slate-200 text-slate-400";
+                    return (
+                      <td key={h} className="p-1 border-l border-slate-200 align-middle">
+                        <select
+                          value={role}
+                          onChange={(e) => setRoleForUser(emp.username, h, e.target.value)}
+                          className={`${selectClass} w-full text-xs rounded px-1 py-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-400`}
+                        >
+                          <option value="">—</option>
+                          <option value="chat">Chat</option>
+                          <option value="phone">Phone</option>
+                          <option value="email">Email</option>
+                        </select>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing && (
+        <RoleAssignModal
+          dayId={dayId}
+          hour={editing.hour}
+          role={editing.role}
+          schedule={schedule}
+          employees={employees}
+          onClose={() => setEditing(null)}
+          onSave={(assignments) => {
+            setSchedule(setCellAssignments(schedule, dayId, editing.hour, assignments));
+            setEditing(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
   const needs = NEEDS[hour] || { chat: 0, phone: 0, email: 0 };
   const assignedByRole = { chat: [], phone: [], email: [] };
@@ -516,6 +664,7 @@ function AdminApp({ session, onLogout }) {
   const [tab, setTab] = useState("schedule");
   const employees = useMemo(() => users, [users]);
   const [previewUsername, setPreviewUsername] = useState("");
+  const [scheduleView, setScheduleView] = useState("week");
 
   // Default the preview selector to the first employee once available
   useEffect(() => {
@@ -535,11 +684,26 @@ function AdminApp({ session, onLogout }) {
         </div>
         {tab === "schedule" && (
           <div>
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm text-slate-600">Click any cell to assign employees. Monday–Friday, 8am–8pm ET.</div>
-              <div className="text-xs text-slate-500">{Object.keys(schedule).length === 0 ? "Showing coverage needs" : ""}</div>
+            <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="inline-flex rounded-md border border-slate-300 bg-white overflow-hidden">
+                <button
+                  onClick={() => setScheduleView("week")}
+                  className={`px-3 py-1.5 text-sm font-medium ${scheduleView === "week" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+                >Week view</button>
+                <button
+                  onClick={() => setScheduleView("day")}
+                  className={`px-3 py-1.5 text-sm font-medium border-l border-slate-300 ${scheduleView === "day" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+                >Daily view</button>
+              </div>
+              <div className="text-xs text-slate-500">
+                {scheduleView === "week"
+                  ? "Click a role pill to assign employees."
+                  : "Pick a day, then use the dropdown in each cell to set a role."}
+              </div>
             </div>
-            <ScheduleGrid schedule={schedule} setSchedule={setSchedule} employees={employees} />
+            {scheduleView === "week"
+              ? <ScheduleGrid schedule={schedule} setSchedule={setSchedule} employees={employees} />
+              : <DailyScheduleView schedule={schedule} setSchedule={setSchedule} employees={employees} />}
           </div>
         )}
         {tab === "viewer" && (
