@@ -311,41 +311,65 @@ function AssignModal({ dayId, hour, schedule, employees, onClose, onSave }) {
   );
 }
 
-function EmployeesTab({ users, setUsers }) {
-  const employees = users.filter(u => u.role === "employee");
-  const [form, setForm] = useState({ username: "", displayName: "", password: "" });
+function EmployeesTab({ users, setUsers, currentUsername }) {
+  const [form, setForm] = useState({ username: "", displayName: "", password: "", role: "employee" });
   const [error, setError] = useState("");
 
-  function addEmployee(e) {
+  function addUser(e) {
     e.preventDefault(); setError("");
     const username = form.username.trim().toLowerCase();
     if (!username || !form.password) { setError("Username and password are required."); return; }
     if (users.some(u => u.username.toLowerCase() === username)) { setError("That username already exists."); return; }
-    setUsers([...users, { username, password: form.password, role: "employee",
-      displayName: form.displayName.trim() || username }]);
-    setForm({ username: "", displayName: "", password: "" });
+    setUsers([...users, {
+      username,
+      password: form.password,
+      role: form.role,
+      displayName: form.displayName.trim() || username,
+    }]);
+    setForm({ username: "", displayName: "", password: "", role: "employee" });
   }
-  function removeEmployee(username) {
-    if (!confirm(`Remove employee "${username}"?`)) return;
+
+  function removeUser(username) {
+    if (username.toLowerCase() === currentUsername.toLowerCase()) {
+      alert("You can't remove your own account while signed in.");
+      return;
+    }
+    if (!confirm(`Remove user "${username}"?`)) return;
     setUsers(users.filter(u => u.username !== username));
   }
+
   function resetPassword(username) {
     const pwd = prompt(`New password for ${username}:`);
     if (!pwd) return;
     setUsers(users.map(u => u.username === username ? { ...u, password: pwd } : u));
   }
 
+  function changeRole(username, newRole) {
+    if (username.toLowerCase() === currentUsername.toLowerCase() && newRole !== "admin") {
+      alert("You can't demote your own account while signed in. Ask another admin to change your role.");
+      return;
+    }
+    setUsers(users.map(u => u.username === username ? { ...u, role: newRole } : u));
+  }
+
+  const adminCount = users.filter(u => u.role === "admin").length;
+
   return (
     <div className="space-y-6">
       <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <h3 className="text-md font-semibold text-slate-800 mb-4">Add employee</h3>
-        <form onSubmit={addEmployee} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        <h3 className="text-md font-semibold text-slate-800 mb-4">Add user</h3>
+        <form onSubmit={addUser} className="grid grid-cols-1 sm:grid-cols-5 gap-3">
           <input placeholder="Username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })}
             className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
           <input placeholder="Display name (optional)" value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })}
             className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
           <input placeholder="Password" type="text" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}
             className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
+          <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}
+            className="border border-slate-300 rounded-md px-3 py-2 text-sm bg-white">
+            <option value="employee">Employee</option>
+            <option value="admin">Admin</option>
+          </select>
           <button className="bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium px-4">Add</button>
         </form>
         {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
@@ -353,32 +377,63 @@ function EmployeesTab({ users, setUsers }) {
 
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="p-4 border-b border-slate-200 flex items-center justify-between">
-          <h3 className="text-md font-semibold text-slate-800">Employees ({employees.length})</h3>
+          <h3 className="text-md font-semibold text-slate-800">Users ({users.length})</h3>
         </div>
-        {employees.length === 0 ? (
-          <div className="p-6 text-sm text-slate-500 italic">No employees yet.</div>
+        {users.length === 0 ? (
+          <div className="p-6 text-sm text-slate-500 italic">No users yet.</div>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-slate-600 text-xs uppercase">
               <tr>
                 <th className="px-4 py-2">Username</th>
                 <th className="px-4 py-2">Display name</th>
+                <th className="px-4 py-2">Role</th>
                 <th className="px-4 py-2">Password</th>
                 <th className="px-4 py-2"></th>
               </tr>
             </thead>
             <tbody>
-              {employees.map(emp => (
-                <tr key={emp.username} className="border-t border-slate-100">
-                  <td className="px-4 py-2 font-mono text-slate-700">{emp.username}</td>
-                  <td className="px-4 py-2 text-slate-700">{emp.displayName}</td>
-                  <td className="px-4 py-2 font-mono text-slate-400">••••••••</td>
-                  <td className="px-4 py-2 text-right space-x-3">
-                    <button onClick={() => resetPassword(emp.username)} className="text-blue-600 hover:text-blue-800 text-xs">Reset password</button>
-                    <button onClick={() => removeEmployee(emp.username)} className="text-red-600 hover:text-red-800 text-xs">Remove</button>
-                  </td>
-                </tr>
-              ))}
+              {users.map(u => {
+                const isSelf = u.username.toLowerCase() === currentUsername.toLowerCase();
+                const isLastAdmin = u.role === "admin" && adminCount === 1;
+                return (
+                  <tr key={u.username} className="border-t border-slate-100">
+                    <td className="px-4 py-2 font-mono text-slate-700">
+                      {u.username}
+                      {isSelf && <span className="ml-2 text-xs text-slate-400">(you)</span>}
+                    </td>
+                    <td className="px-4 py-2 text-slate-700">{u.displayName}</td>
+                    <td className="px-4 py-2">
+                      <select
+                        value={u.role}
+                        onChange={e => changeRole(u.username, e.target.value)}
+                        disabled={isLastAdmin}
+                        title={isLastAdmin ? "At least one admin is required" : ""}
+                        className={`border rounded-md px-2 py-1 text-xs bg-white ${
+                          u.role === "admin"
+                            ? "border-blue-300 text-blue-700"
+                            : "border-slate-300 text-slate-700"
+                        } ${isLastAdmin ? "opacity-60 cursor-not-allowed" : ""}`}
+                      >
+                        <option value="employee">Employee</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-slate-400">••••••••</td>
+                    <td className="px-4 py-2 text-right space-x-3">
+                      <button onClick={() => resetPassword(u.username)} className="text-blue-600 hover:text-blue-800 text-xs">Reset password</button>
+                      <button
+                        onClick={() => removeUser(u.username)}
+                        disabled={isSelf}
+                        title={isSelf ? "You can't remove your own account" : ""}
+                        className={`text-xs ${isSelf ? "text-slate-300 cursor-not-allowed" : "text-red-600 hover:text-red-800"}`}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -414,7 +469,7 @@ function AdminApp({ session, onLogout }) {
   const [users, setUsers] = useLocalState(LS_KEYS.users, []);
   const [schedule, setSchedule] = useLocalState(LS_KEYS.schedule, {});
   const [tab, setTab] = useState("schedule");
-  const employees = useMemo(() => users.filter(u => u.role === "employee"), [users]);
+  const employees = useMemo(() => users, [users]);
   const [previewUsername, setPreviewUsername] = useState("");
 
   // Default the preview selector to the first employee once available
@@ -450,7 +505,7 @@ function AdminApp({ session, onLogout }) {
             setPreviewUsername={setPreviewUsername}
           />
         )}
-        {tab === "employees" && <EmployeesTab users={users} setUsers={setUsers} />}
+        {tab === "employees" && <EmployeesTab users={users} setUsers={setUsers} currentUsername={session.username} />}
       </div>
     </div>
   );
