@@ -102,37 +102,35 @@ const NEEDS = {
   19: { chat: 0, phone: 0, email: 1 },
 };
 
-// LocalStorage key used only for small UI preferences (not data).
-const UI_PREFS_KEY = "sched.ui.v2";
-function loadPrefs() {
-  try { return JSON.parse(localStorage.getItem(UI_PREFS_KEY) || "{}"); } catch { return {}; }
-}
-function savePrefs(p) { try { localStorage.setItem(UI_PREFS_KEY, JSON.stringify(p)); } catch {} }
-
-// ---- API client ----
-async function apiRequest(method, url, body) {
-  const init = { method, credentials: "same-origin", headers: {} };
-  if (body !== undefined) {
-    init.headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
-  }
-  const res = await fetch(url, init);
-  const ct = res.headers.get("content-type") || "";
-  const data = ct.includes("application/json") ? await res.json() : await res.text();
-  if (!res.ok) {
-    const msg = (data && data.error) || (typeof data === "string" ? data : "Request failed");
-    const err = new Error(msg); err.status = res.status; err.data = data;
-    throw err;
-  }
-  return data;
-}
-const api = {
-  get:    (url)       => apiRequest("GET", url),
-  post:   (url, body) => apiRequest("POST", url, body),
-  put:    (url, body) => apiRequest("PUT", url, body),
-  patch:  (url, body) => apiRequest("PATCH", url, body),
-  delete: (url)       => apiRequest("DELETE", url),
+const LS_KEYS = {
+  users: "sched.users.v1",
+  schedule: "sched.schedule.v1",
+  session: "sched.session.v1",
 };
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) { return fallback; }
+}
+function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+function seedIfEmpty() {
+  const users = loadJSON(LS_KEYS.users, null);
+  if (!users) {
+    saveJSON(LS_KEYS.users, [
+      { username: "admin", password: "admin123", role: "admin", displayName: "Admin" },
+    ]);
+  }
+  const sched = loadJSON(LS_KEYS.schedule, null);
+  if (sched == null) {
+    saveJSON(LS_KEYS.schedule, {});
+  } else {
+    const migrated = migrateScheduleShape(sched);
+    if (migrated !== sched) saveJSON(LS_KEYS.schedule, migrated);
+  }
+}
 
 function formatHour(h) {
   const suffix = h >= 12 ? "pm" : "am";
@@ -176,73 +174,38 @@ function formatWeekRange(monday) {
   return `${mM} ${monday.getDate()} – ${fM} ${friday.getDate()}`;
 }
 
+// Schedule is now stored as { [weekKey]: { [dayId]: { [hour]: assignments } } }.
+// Older versions saved directly as { [dayId]: { [hour]: assignments } }.
+// This migration moves the old shape into the current week.
+const DAY_ID_SET = new Set(DAYS.map(d => d.id));
+function migrateScheduleShape(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const keys = Object.keys(raw);
+  if (keys.length === 0) return raw;
+  const looksOld = keys.some(k => DAY_ID_SET.has(k));
+  if (!looksOld) return raw;
+  const key = toDateKey(getMondayOf(new Date()));
+  return { [key]: raw };
+}
 
-// Persist a small UI preference in localStorage (survives reloads).
-function useLocalPref(field, fallback) {
-  const [val, setVal] = useState(() => {
-    const p = loadPrefs();
-    return (p && field in p) ? p[field] : fallback;
-  });
-  useEffect(() => {
-    const p = loadPrefs();
-    p[field] = val;
-    savePrefs(p);
-  }, [field, val]);
+function useLocalState(key, fallback) {
+  const [val, setVal] = useState(() => loadJSON(key, fallback));
+  useEffect(() => { saveJSON(key, val); }, [key, val]);
   return [val, setVal];
 }
 
-// Hook: load + mutate the users list against the API.
-function useUsers() {
-  const [users, setUsers] = useState(null);
-  const [error, setError] = useState(null);
-  const reload = async () => {
-    try { setUsers(await api.get("/api/users")); setError(null); }
-    catch (e) { setError(e); }
-  };
-  useEffect(() => { reload(); }, []);
-  return {
-    users: users || [],
-    loading: users === null,
-    error,
-    reload,
-    create: async (data) => { await api.post("/api/users", data); await reload(); },
-    update: async (username, data) => { await api.patch(`/api/users/${encodeURIComponent(username)}`, data); await reload(); },
-    remove: async (username) => { await api.delete(`/api/users/${encodeURIComponent(username)}`); await reload(); },
-    rotateToken: async (username) => {
-      const r = await api.post(`/api/users/${encodeURIComponent(username)}/rotate-token`);
-      await reload();
-      return r.icalToken;
-    },
-  };
-}
-
-// Hook: load + optimistically replace the schedule for a single week.
-function useWeekSchedule(weekKey) {
-  const [schedule, setSchedule] = useState(null);
-  const [error, setError] = useState(null);
-  useEffect(() => {
-    let cancelled = false;
-    setSchedule(null);
-    api.get(`/api/schedule/${weekKey}`).then(d => { if (!cancelled) setSchedule(d); })
-      .catch(e => { if (!cancelled) setError(e); });
-    return () => { cancelled = true; };
-  }, [weekKey]);
-  const replace = async (nextOrFn) => {
-    const prev = schedule || {};
-    const next = typeof nextOrFn === "function" ? nextOrFn(prev) : nextOrFn;
-    setSchedule(next); // optimistic
-    try {
-      const got = await api.put(`/api/schedule/${weekKey}`, next);
-      setSchedule(got);
-    } catch (e) {
-      setError(e);
-      // revert by refetching
-      try { setSchedule(await api.get(`/api/schedule/${weekKey}`)); } catch {}
-      alert("Failed to save schedule: " + e.message);
+// Run schedule-shape migration once at module load, before any component reads
+// localStorage via useLocalState(). This handles users who already have a
+// saved session and will mount AdminApp/EmployeeApp on first paint.
+(function runInitialMigration() {
+  try {
+    const existing = loadJSON(LS_KEYS.schedule, null);
+    if (existing != null) {
+      const migrated = migrateScheduleShape(existing);
+      if (migrated !== existing) saveJSON(LS_KEYS.schedule, migrated);
     }
-  };
-  return { schedule: schedule || {}, loading: schedule === null, error, replace };
-}
+  } catch (e) { /* ignore */ }
+})();
 
 function getCellAssignments(schedule, dayId, hour) {
   return (schedule && schedule[dayId] && schedule[dayId][hour]) ? schedule[dayId][hour] : [];
@@ -260,19 +223,18 @@ function LoginView({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
-  async function submit(e) {
+  function submit(e) {
     e.preventDefault();
-    setError(""); setSubmitting(true);
-    try {
-      const session = await api.post("/api/login", { username: username.trim(), password });
-      onLogin(session);
-    } catch (err) {
-      setError(err.message || "Sign-in failed");
-    } finally {
-      setSubmitting(false);
-    }
+    const users = loadJSON(LS_KEYS.users, []);
+    const u = users.find(x =>
+      x.username.toLowerCase() === username.trim().toLowerCase() &&
+      x.password === password
+    );
+    if (!u) { setError("Invalid username or password."); return; }
+    const session = { username: u.username, role: u.role };
+    saveJSON(LS_KEYS.session, session);
+    onLogin(session);
   }
 
   return (
@@ -287,9 +249,8 @@ function LoginView({ onLogin }) {
         <input type="password" value={password} onChange={e => setPassword(e.target.value)}
           className="w-full border border-slate-300 rounded-md px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-400" />
         {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
-        <button type="submit" disabled={submitting}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-md disabled:opacity-60">
-          {submitting ? "Signing in…" : "Sign in"}
+        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-md">
+          Sign in
         </button>
         <div className="mt-6 text-xs text-slate-500 leading-relaxed">
           Default admin: <span className="font-mono">admin</span> / <span className="font-mono">admin123</span>.
@@ -726,67 +687,50 @@ function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSa
   );
 }
 
-function EmployeesTab({ usersApi, currentUsername }) {
-  const users = usersApi.users;
+function EmployeesTab({ users, setUsers, currentUsername }) {
   const [form, setForm] = useState({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
   const [error, setError] = useState("");
 
-  async function addUser(e) {
+  function addUser(e) {
     e.preventDefault(); setError("");
     const username = form.username.trim().toLowerCase();
     if (!username || !form.password) { setError("Username and password are required."); return; }
-    try {
-      await usersApi.create({
-        username,
-        password: form.password,
-        role: form.role,
-        displayName: form.displayName.trim() || username,
-        shift: form.shift,
-      });
-      setForm({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
-    } catch (err) { setError(err.message || "Could not add user."); }
+    if (users.some(u => u.username.toLowerCase() === username)) { setError("That username already exists."); return; }
+    setUsers([...users, {
+      username,
+      password: form.password,
+      role: form.role,
+      displayName: form.displayName.trim() || username,
+      shift: form.shift,
+    }]);
+    setForm({ username: "", displayName: "", password: "", role: "employee", shift: DEFAULT_SHIFT_ID });
   }
 
-  async function removeUser(username) {
+  function removeUser(username) {
     if (username.toLowerCase() === currentUsername.toLowerCase()) {
       alert("You can't remove your own account while signed in.");
       return;
     }
     if (!confirm(`Remove user "${username}"?`)) return;
-    try { await usersApi.remove(username); }
-    catch (err) { alert(err.message || "Could not remove user."); }
+    setUsers(users.filter(u => u.username !== username));
   }
 
-  async function resetPassword(username) {
+  function resetPassword(username) {
     const pwd = prompt(`New password for ${username}:`);
     if (!pwd) return;
-    try { await usersApi.update(username, { password: pwd }); }
-    catch (err) { alert(err.message || "Could not reset password."); }
+    setUsers(users.map(u => u.username === username ? { ...u, password: pwd } : u));
   }
 
-  async function changeRole(username, newRole) {
+  function changeRole(username, newRole) {
     if (username.toLowerCase() === currentUsername.toLowerCase() && newRole !== "admin") {
       alert("You can't demote your own account while signed in. Ask another admin to change your role.");
       return;
     }
-    try { await usersApi.update(username, { role: newRole }); }
-    catch (err) { alert(err.message || "Could not change role."); }
+    setUsers(users.map(u => u.username === username ? { ...u, role: newRole } : u));
   }
 
-  async function changeShift(username, newShift) {
-    try { await usersApi.update(username, { shift: newShift }); }
-    catch (err) { alert(err.message || "Could not change shift."); }
-  }
-
-  async function rotateIcalToken(username) {
-    if (!confirm(`Rotate the iCal link for ${username}? Their old link will stop working.`)) return;
-    try { await usersApi.rotateToken(username); }
-    catch (err) { alert(err.message || "Could not rotate token."); }
-  }
-
-  function copyIcalUrl(token) {
-    const url = `${window.location.origin}/ical/${token}.ics`;
-    copyToClipboard(url, "iCal link copied to clipboard");
+  function changeShift(username, newShift) {
+    setUsers(users.map(u => u.username === username ? { ...u, shift: newShift } : u));
   }
 
   const adminCount = users.filter(u => u.role === "admin").length;
@@ -956,16 +900,26 @@ function WeekSelector({ weekStart, onChange }) {
 }
 
 function AdminApp({ session, onLogout }) {
-  const usersApi = useUsers();
-  const employees = usersApi.users;
+  const [users, setUsers] = useLocalState(LS_KEYS.users, []);
+  const [fullSchedule, setFullSchedule] = useLocalState(LS_KEYS.schedule, {});
   const [tab, setTab] = useState("schedule");
+  const employees = useMemo(() => users, [users]);
   const [previewUsername, setPreviewUsername] = useState("");
   const [scheduleView, setScheduleView] = useState("day");
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
   const weekKey = toDateKey(weekStart);
-  const weekApi = useWeekSchedule(weekKey);
-  const weekSchedule = weekApi.schedule;
-  const setWeekSchedule = weekApi.replace;
+  const weekSchedule = fullSchedule[weekKey] || {};
+
+  function setWeekSchedule(nextOrFn) {
+    setFullSchedule(prev => {
+      const current = prev[weekKey] || {};
+      const next = typeof nextOrFn === "function" ? nextOrFn(current) : nextOrFn;
+      const copy = { ...prev };
+      if (!next || Object.keys(next).length === 0) delete copy[weekKey];
+      else copy[weekKey] = next;
+      return copy;
+    });
+  }
 
   // Default the preview selector to the first employee once available
   useEffect(() => {
@@ -1022,7 +976,7 @@ function AdminApp({ session, onLogout }) {
             setPreviewUsername={setPreviewUsername}
           />
         )}
-        {tab === "employees" && <EmployeesTab usersApi={usersApi} currentUsername={session.username} />}
+        {tab === "employees" && <EmployeesTab users={users} setUsers={setUsers} currentUsername={session.username} />}
       </div>
     </div>
   );
