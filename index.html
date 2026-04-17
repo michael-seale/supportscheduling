@@ -216,8 +216,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -615,7 +615,7 @@ function DailyScheduleView({ schedule, setSchedule, employees }) {
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyTargets, setCopyTargets] = useState([]); // array of target day IDs
   const [copyNotice, setCopyNotice] = useState(""); // short-lived success message
-  const [coverageCollapsed, setCoverageCollapsed] = useState(false);
+  const [coverageCollapsed, setCoverageCollapsed] = useState(true);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearTargets, setClearTargets] = useState([]); // array of usernames to clear
 
@@ -1650,6 +1650,19 @@ function RolesTab() {
     return [...s].sort((a, b) => a.localeCompare(b));
   }, [rolesRaw]);
 
+  // Cluster roles by group for the roles table. Groups start collapsed by
+  // default so the Roles tab opens as a clean index of group names. Track
+  // expanded state by group key ("" means the Ungrouped bucket).
+  const rolesByGroup = useMemo(() => groupRolesByGroup(roles), [roles]);
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  function toggleGroupExpanded(key) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
   function addRole(e) {
     e.preventDefault();
     setError("");
@@ -1780,72 +1793,106 @@ function RolesTab() {
               </tr>
             </thead>
             <tbody>
-              {roles.map(r => {
-                const usage = countRoleUsage(schedule, r.id);
+              {rolesByGroup.map(group => {
+                const key = group.name || "__ungrouped__";
+                const isOpen = expandedGroups.has(key);
+                const label = group.name || "Ungrouped";
+                // Sum total usage across the group so the header hints at
+                // activity without forcing the user to expand every section.
+                const groupUsage = group.roles.reduce(
+                  (n, r) => n + countRoleUsage(schedule, r.id),
+                  0
+                );
                 return (
-                  <tr key={r.id} className="border-t border-slate-100 align-middle">
-                    <td className="px-4 py-2">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-semibold ${r.solid}`}>
-                        {r.label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2">
-                      <input
-                        value={r.label}
-                        onChange={e => updateRole(r.id, { label: e.target.value })}
-                        className="border border-slate-300 rounded-md px-2 py-1 text-sm w-48"
-                      />
-                    </td>
-                    <td className="px-4 py-2">
-                      <ColorPicker
-                        value={r.colorName}
-                        onChange={name => updateRole(r.id, { color: name })}
-                      />
-                    </td>
-                    <td className="px-4 py-2">
-                      <label className="inline-flex items-center gap-2 text-xs text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={!!r.isCoverage}
-                          onChange={e => updateRole(r.id, { isCoverage: e.target.checked })}
-                          className="w-4 h-4"
-                        />
-                        <span>{r.isCoverage ? "Coverage" : "Non-coverage"}</span>
-                      </label>
-                    </td>
-                    <td className="px-4 py-2">
-                      <select
-                        value={r.department || ""}
-                        onChange={e => updateRole(r.id, { department: e.target.value })}
-                        className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white text-slate-700"
+                  <React.Fragment key={key}>
+                    <tr className="border-t border-slate-200 bg-slate-50">
+                      <th
+                        colSpan={7}
+                        className="px-4 py-2 text-left font-semibold text-slate-700"
                       >
-                        <option value="">— Unassigned —</option>
-                        {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
-                      </select>
-                    </td>
-                    <td className="px-4 py-2">
-                      <input
-                        list="role-groups-datalist"
-                        placeholder="—"
-                        value={r.group || ""}
-                        onChange={e => updateRole(r.id, { group: e.target.value })}
-                        className="border border-slate-300 rounded-md px-2 py-1 text-xs w-36"
-                      />
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <div className="flex items-center justify-end gap-3">
-                        <span className="text-xs text-slate-400">
-                          {usage > 0 ? `${usage} assignment${usage === 1 ? "" : "s"}` : "unused"}
-                        </span>
                         <button
-                          onClick={() => removeRole(r.id)}
-                          className="text-xs text-red-600 hover:text-red-800"
+                          type="button"
+                          onClick={() => toggleGroupExpanded(key)}
+                          className="inline-flex items-center gap-2 w-full text-left hover:text-slate-900"
                         >
-                          Remove
+                          <span className={`inline-block transition-transform text-slate-400 ${isOpen ? "rotate-90" : ""}`}>▸</span>
+                          <span>{label}</span>
+                          <span className="text-xs font-normal text-slate-500">
+                            ({group.roles.length} role{group.roles.length === 1 ? "" : "s"}
+                            {groupUsage > 0 ? ` · ${groupUsage} assignment${groupUsage === 1 ? "" : "s"}` : ""})
+                          </span>
                         </button>
-                      </div>
-                    </td>
-                  </tr>
+                      </th>
+                    </tr>
+                    {isOpen && group.roles.map(r => {
+                      const usage = countRoleUsage(schedule, r.id);
+                      return (
+                        <tr key={r.id} className="border-t border-slate-100 align-middle">
+                          <td className="px-4 py-2">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-semibold ${r.solid}`}>
+                              {r.label}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">
+                            <input
+                              value={r.label}
+                              onChange={e => updateRole(r.id, { label: e.target.value })}
+                              className="border border-slate-300 rounded-md px-2 py-1 text-sm w-48"
+                            />
+                          </td>
+                          <td className="px-4 py-2">
+                            <ColorPicker
+                              value={r.colorName}
+                              onChange={name => updateRole(r.id, { color: name })}
+                            />
+                          </td>
+                          <td className="px-4 py-2">
+                            <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={!!r.isCoverage}
+                                onChange={e => updateRole(r.id, { isCoverage: e.target.checked })}
+                                className="w-4 h-4"
+                              />
+                              <span>{r.isCoverage ? "Coverage" : "Non-coverage"}</span>
+                            </label>
+                          </td>
+                          <td className="px-4 py-2">
+                            <select
+                              value={r.department || ""}
+                              onChange={e => updateRole(r.id, { department: e.target.value })}
+                              className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white text-slate-700"
+                            >
+                              <option value="">— Unassigned —</option>
+                              {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-4 py-2">
+                            <input
+                              list="role-groups-datalist"
+                              placeholder="—"
+                              value={r.group || ""}
+                              onChange={e => updateRole(r.id, { group: e.target.value })}
+                              className="border border-slate-300 rounded-md px-2 py-1 text-xs w-36"
+                            />
+                          </td>
+                          <td className="px-4 py-2 text-right">
+                            <div className="flex items-center justify-end gap-3">
+                              <span className="text-xs text-slate-400">
+                                {usage > 0 ? `${usage} assignment${usage === 1 ? "" : "s"}` : "unused"}
+                              </span>
+                              <button
+                                onClick={() => removeRole(r.id)}
+                                className="text-xs text-red-600 hover:text-red-800"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
                 );
               })}
             </tbody>
