@@ -165,8 +165,8 @@ function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value))
 // for other bins you care about.
 // ---------------------------------------------------------------------------
 const JSONBIN_CONFIG = {
-  binId: "69e26d9daaba8821970dc5f1",
-  apiKey: "$2a$10$MBRCYN.w2bbJEXx4GRp6CuPriliFvwiOvxkCXYviYugzNxdio9.lm",
+  binId: "",    // e.g. "68fb1c2ca41ac40f3c7f12345"
+  apiKey: "",   // e.g. "$2a$10$abc...xyz"
 };
 const REMOTE_POLL_MS = 10000;
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
@@ -1149,12 +1149,14 @@ function SettingsPage({ currentUsername }) {
         <div className="flex gap-1">
           <TabButton active={subTab === "employees"} onClick={() => setSubTab("employees")}>Employees</TabButton>
           <TabButton active={subTab === "roles"} onClick={() => setSubTab("roles")}>Roles</TabButton>
+          <TabButton active={subTab === "reports"} onClick={() => setSubTab("reports")}>Reports</TabButton>
         </div>
       </div>
       {subTab === "employees" && (
         <EmployeesTab users={users} setUsers={setUsers} currentUsername={currentUsername} />
       )}
       {subTab === "roles" && <RolesTab />}
+      {subTab === "reports" && <ReportsTab />}
     </div>
   );
 }
@@ -1193,32 +1195,27 @@ function scheduleWithoutRole(schedule, roleId) {
   return out;
 }
 
-function ColorSwatch({ colorName, selected, onClick, title }) {
-  const pal = COLOR_PALETTE[colorName] || COLOR_PALETTE[DEFAULT_COLOR];
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title || colorName}
-      className={`${pal.swatch} w-5 h-5 rounded-full border-2 transition ${
-        selected ? "border-slate-800 ring-2 ring-offset-1 ring-slate-400" : "border-white hover:border-slate-300"
-      }`}
-    />
-  );
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
+// Dropdown color picker with a swatch preview so you can still see the color
+// at a glance. Native <select> options can't easily show colored swatches
+// themselves, so we pair the select with a swatch next to it.
 function ColorPicker({ value, onChange }) {
+  const pal = COLOR_PALETTE[value] || COLOR_PALETTE[DEFAULT_COLOR];
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {COLOR_NAMES.map(name => (
-        <ColorSwatch
-          key={name}
-          colorName={name}
-          selected={value === name}
-          onClick={() => onChange(name)}
-          title={name.charAt(0).toUpperCase() + name.slice(1)}
-        />
-      ))}
+    <div className="inline-flex items-center gap-2">
+      <span className={`${pal.swatch} inline-block w-4 h-4 rounded border border-slate-300`} aria-hidden="true" />
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="border border-slate-300 rounded-md px-2 py-1 text-sm bg-white"
+      >
+        {COLOR_NAMES.map(name => (
+          <option key={name} value={name}>{capitalize(name)}</option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -1387,6 +1384,133 @@ function RolesTab() {
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+function ReportsTab() {
+  const { users, roles, schedule: fullSchedule } = useShared();
+  const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
+  const weekKey = toDateKey(weekStart);
+  const weekSchedule = fullSchedule[weekKey] || {};
+
+  // Count hours per (username, roleId) for the selected week.
+  // Also collect any orphan role IDs that appear in assignments but don't
+  // match an existing role so we can show them in a trailing "Other" column.
+  const { hoursByUser, totalsByRole, grandTotal, orphanRoleIds } = useMemo(() => {
+    const hoursByUser = {};
+    const totalsByRole = {};
+    const knownIds = new Set(roles.map(r => r.id));
+    const orphans = new Set();
+    let grand = 0;
+    DAYS.forEach(d => {
+      HOURS.forEach(h => {
+        const assigns = (weekSchedule[d.id] && weekSchedule[d.id][h]) || [];
+        assigns.forEach(a => {
+          if (!hoursByUser[a.username]) hoursByUser[a.username] = {};
+          hoursByUser[a.username][a.role] = (hoursByUser[a.username][a.role] || 0) + 1;
+          totalsByRole[a.role] = (totalsByRole[a.role] || 0) + 1;
+          grand += 1;
+          if (!knownIds.has(a.role)) orphans.add(a.role);
+        });
+      });
+    });
+    return {
+      hoursByUser,
+      totalsByRole,
+      grandTotal: grand,
+      orphanRoleIds: Array.from(orphans),
+    };
+  }, [weekSchedule, roles]);
+
+  const roleColumns = [...roles, ...orphanRoleIds.map(id => ({
+    id, label: id, color: "bg-slate-100 text-slate-500 border-slate-200",
+    solid: "bg-slate-400 text-white border-slate-500", isOrphan: true,
+  }))];
+
+  function userTotal(username) {
+    const row = hoursByUser[username] || {};
+    return Object.values(row).reduce((a, b) => a + b, 0);
+  }
+
+  return (
+    <div>
+      <div className="mb-4 flex items-end justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-800">Hours by employee and role</h2>
+          <p className="text-sm text-slate-500">
+            One point = one assigned hour. Totals roll up all assignments (coverage and non-coverage) for the selected week.
+          </p>
+        </div>
+        <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+      </div>
+
+      {users.length === 0 ? (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
+          Add users on the Employees tab first, then come back here to see their hours.
+        </div>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600 text-xs uppercase">
+              <tr>
+                <th className="px-4 py-2 text-left sticky left-0 bg-slate-50 z-10">Employee</th>
+                {roleColumns.map(r => (
+                  <th key={r.id} className="px-3 py-2 text-center whitespace-nowrap">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-semibold ${r.solid}`}>
+                      {r.label}{r.isOrphan ? " (deleted)" : ""}
+                    </span>
+                  </th>
+                ))}
+                <th className="px-4 py-2 text-center font-semibold">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(u => {
+                const row = hoursByUser[u.username] || {};
+                const total = userTotal(u.username);
+                const shiftLabel = (SHIFT_BY_ID[getShiftOf(u)] || {}).label || "";
+                return (
+                  <tr key={u.username} className="border-t border-slate-100">
+                    <td className="px-4 py-2 sticky left-0 bg-white whitespace-nowrap">
+                      <span className="text-slate-800 font-medium">{u.displayName || u.username}</span>
+                      {u.role === "admin" && (
+                        <span className="ml-2 text-[10px] uppercase text-blue-700 bg-blue-50 border border-blue-200 rounded px-1 py-0.5">Admin</span>
+                      )}
+                      <span className="ml-2 text-[10px] uppercase text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5">{shiftLabel}</span>
+                    </td>
+                    {roleColumns.map(r => {
+                      const v = row[r.id] || 0;
+                      return (
+                        <td
+                          key={r.id}
+                          className={`px-3 py-2 text-center tabular-nums ${v > 0 ? "text-slate-800" : "text-slate-300"}`}
+                        >
+                          {v}
+                        </td>
+                      );
+                    })}
+                    <td className={`px-4 py-2 text-center font-semibold tabular-nums ${total > 0 ? "text-slate-900" : "text-slate-300"}`}>
+                      {total}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="bg-slate-50 border-t border-slate-200">
+                <td className="px-4 py-2 text-slate-600 text-xs uppercase tracking-wide sticky left-0 bg-slate-50">Total</td>
+                {roleColumns.map(r => (
+                  <td key={r.id} className="px-3 py-2 text-center font-semibold tabular-nums text-slate-700">
+                    {totalsByRole[r.id] || 0}
+                  </td>
+                ))}
+                <td className="px-4 py-2 text-center font-bold tabular-nums text-slate-900">{grandTotal}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
