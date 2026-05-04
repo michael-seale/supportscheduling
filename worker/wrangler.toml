@@ -1,0 +1,10 @@
+name = "supportscheduling-ics"
+main = "ics-feed.js"
+compatibility_date = "2024-09-01"
+
+# Public, non-secret config. Override with your bin ID after creating the bin.
+[vars]
+JSONBIN_BIN_ID = "69e26d9daaba8821970dc5f1"
+
+# JSONBIN_API_KEY is set as a Worker secret, NOT in this file:
+#   wrangler secret put JSONBIN_API_KEY
