@@ -740,12 +740,8 @@ function allFeedUrl() {
 function toWebcal(httpUrl) {
   return (httpUrl || "").replace(/^https?:\/\//, "webcal://");
 }
-function googleCalendarSubscribeUrl(httpUrl) {
-  // Google Calendar's "add by URL" prefill page.
-  return `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(httpUrl)}`;
-}
 
-// One row of "subscription URL + buttons" for a given http(s) feed URL.
+// One row of "subscription URL + Copy" for a given http(s) feed URL.
 function FeedUrlRow({ url, label }) {
   const [copied, setCopied] = useState(false);
   const webcal = toWebcal(url);
@@ -769,22 +765,6 @@ function FeedUrlRow({ url, label }) {
       >
         {copied ? "Copied" : "Copy"}
       </button>
-      <a
-        href={webcal}
-        className="text-xs px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700"
-        title="Open in your default calendar app (Apple Calendar, Outlook, etc.)"
-      >
-        Apple/Outlook
-      </a>
-      <a
-        href={googleCalendarSubscribeUrl(url)}
-        target="_blank"
-        rel="noreferrer"
-        className="text-xs px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700"
-        title="Add to Google Calendar"
-      >
-        Google
-      </a>
     </div>
   );
 }

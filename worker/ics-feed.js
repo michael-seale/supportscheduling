@@ -291,12 +291,13 @@ export default {
       calendarName,
     });
 
-    const filename = all ? "rv-support-everyone.ics" : `rv-support-${safeFilenamePart(username)}.ics`;
+    // No Content-Disposition: subscription clients (Apple Calendar especially)
+    // can mistake a `filename` hint for a one-shot download and refuse to
+    // subscribe. text/calendar alone is the standard signal.
     return new Response(ics, {
       status: 200,
       headers: {
         "content-type": "text/calendar; charset=utf-8",
-        "content-disposition": `inline; filename="${filename}"`,
         // Calendar clients respect this hint when deciding how often to refetch.
         "cache-control": "public, max-age=300",
         ...corsHeaders(),
