@@ -136,6 +136,24 @@ async function fetchBin(env) {
   };
 }
 
+function buildRunEvent({ assignUser, display, dayYmd, startHour, endHour, role, roleLabel, dtstamp }) {
+  const uid = `${ymdToDateKey(dayYmd)}-${startHour}-${safeFilenamePart(assignUser)}-${safeFilenamePart(role)}@rv-support-scheduling`;
+  const summary = `${roleLabel} — ${display}`;
+  const description = `${roleLabel} shift (${formatHourLabel(startHour)}–${formatHourLabel(endHour + 1)} ET)`;
+  return [
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${dtstamp}`,
+    `DTSTART;TZID=${ICS_TZID}:${icsLocalStamp(dayYmd.y, dayYmd.m, dayYmd.d, startHour)}`,
+    `DTEND;TZID=${ICS_TZID}:${icsLocalStamp(dayYmd.y, dayYmd.m, dayYmd.d, endHour + 1)}`,
+    icsFold(`SUMMARY:${icsEscape(summary)}`),
+    icsFold(`DESCRIPTION:${icsEscape(description)}`),
+    "TRANSP:OPAQUE",
+    "END:VEVENT",
+  ].join("\r\n");
+}
+
+// Same-role consecutive hours for the same user collapse into one VEVENT.
 function buildIcs({ users, roles, schedule, username, calendarName }) {
   const dtstamp = icsUtcStamp(new Date());
   const userByName = {};
@@ -150,33 +168,37 @@ function buildIcs({ users, roles, schedule, username, calendarName }) {
     const week = schedule[weekKey] || {};
     DAYS.forEach((d, dayIndex) => {
       const dayMap = week[d.id] || {};
+      const dayYmd = addDays(weekStart, dayIndex);
+      const buckets = new Map();
       Object.keys(dayMap).forEach(hourStr => {
         const hour = Number(hourStr);
         if (!Number.isFinite(hour)) return;
-        const assigns = dayMap[hourStr] || [];
-        const dayYmd = addDays(weekStart, dayIndex);
-        assigns.forEach(a => {
+        (dayMap[hourStr] || []).forEach(a => {
           if (!a || !a.username) return;
           if (username && a.username.toLowerCase() !== username.toLowerCase()) return;
-          const u = userByName[a.username.toLowerCase()];
-          const r = roleById[a.role];
-          const display = u ? (u.displayName || u.username) : a.username;
-          const roleLabel = r ? r.label : a.role;
-          const uid = `${ymdToDateKey(dayYmd)}-${hour}-${safeFilenamePart(a.username)}-${safeFilenamePart(a.role)}@rv-support-scheduling`;
-          const summary = `${roleLabel} — ${display}`;
-          const description = `${roleLabel} shift (${formatHourLabel(hour)}–${formatHourLabel(hour + 1)} ET)`;
-          events.push([
-            "BEGIN:VEVENT",
-            `UID:${uid}`,
-            `DTSTAMP:${dtstamp}`,
-            `DTSTART;TZID=${ICS_TZID}:${icsLocalStamp(dayYmd.y, dayYmd.m, dayYmd.d, hour)}`,
-            `DTEND;TZID=${ICS_TZID}:${icsLocalStamp(dayYmd.y, dayYmd.m, dayYmd.d, hour + 1)}`,
-            icsFold(`SUMMARY:${icsEscape(summary)}`),
-            icsFold(`DESCRIPTION:${icsEscape(description)}`),
-            "TRANSP:OPAQUE",
-            "END:VEVENT",
-          ].join("\r\n"));
+          const key = `${a.username.toLowerCase()}|${a.role || ""}`;
+          let b = buckets.get(key);
+          if (!b) { b = { username: a.username, role: a.role || "", hours: new Set() }; buckets.set(key, b); }
+          b.hours.add(hour);
         });
+      });
+      buckets.forEach(b => {
+        const sorted = Array.from(b.hours).sort((x, y) => x - y);
+        if (sorted.length === 0) return;
+        const u = userByName[b.username.toLowerCase()];
+        const r = roleById[b.role];
+        const display = u ? (u.displayName || u.username) : b.username;
+        const roleLabel = r ? r.label : b.role;
+        let runStart = sorted[0], runEnd = sorted[0];
+        for (let i = 1; i < sorted.length; i++) {
+          if (sorted[i] === runEnd + 1) {
+            runEnd = sorted[i];
+          } else {
+            events.push(buildRunEvent({ assignUser: b.username, display, dayYmd, startHour: runStart, endHour: runEnd, role: b.role, roleLabel, dtstamp }));
+            runStart = sorted[i]; runEnd = sorted[i];
+          }
+        }
+        events.push(buildRunEvent({ assignUser: b.username, display, dayYmd, startHour: runStart, endHour: runEnd, role: b.role, roleLabel, dtstamp }));
       });
     });
   });

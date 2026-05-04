@@ -617,15 +617,19 @@ function safeFilenamePart(s) {
   return String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "schedule";
 }
 
-// Build a single VEVENT covering one assigned hour.
-function buildHourEvent({ assignUser, displayName, day, hour, role, roleLabel, dtstamp }) {
-  const dtstart = icsLocalStamp(day, hour);
-  const dtend = icsLocalStamp(day, hour + 1);
-  // UID must be stable across re-exports so calendars merge updates rather
-  // than creating duplicate events. Tie it to (date, hour, user, role).
-  const uid = `${toDateKey(day)}-${hour}-${safeFilenamePart(assignUser)}-${safeFilenamePart(role)}@rv-support-scheduling`;
+// Build a VEVENT for a contiguous run of hours where one user has one role.
+// startHour is inclusive, endHour is inclusive — DTEND is endHour+1 since
+// the event ends at the *top* of the hour after the last covered hour.
+function buildRunEvent({ assignUser, displayName, day, startHour, endHour, role, roleLabel, dtstamp }) {
+  const dtstart = icsLocalStamp(day, startHour);
+  const dtend = icsLocalStamp(day, endHour + 1);
+  // UID is keyed on the run's *start* hour so when a schedule edit shrinks,
+  // grows, or splits a block, calendars can still match and update existing
+  // events instead of duplicating. Different start hour = different event.
+  const uid = `${toDateKey(day)}-${startHour}-${safeFilenamePart(assignUser)}-${safeFilenamePart(role)}@rv-support-scheduling`;
   const summary = `${roleLabel} — ${displayName || assignUser}`;
-  const description = `${roleLabel} shift (${formatHour(hour)}–${formatHour(hour + 1)} ET)`;
+  const span = `${formatHour(startHour)}–${formatHour(endHour + 1)} ET`;
+  const description = `${roleLabel} shift (${span})`;
   return [
     "BEGIN:VEVENT",
     `UID:${uid}`,
@@ -642,6 +646,9 @@ function buildHourEvent({ assignUser, displayName, day, hour, role, roleLabel, d
 // Walk the schedule and assemble a full VCALENDAR document.
 //   username: when provided, include only that person's events. Omit for "all".
 //   calendarName: shows up as the calendar name in Google/Apple/Outlook.
+//
+// Same-role consecutive hours for the same user collapse into one VEVENT —
+// e.g. Chat 9am, Chat 10am, Chat 11am becomes a single 9am–noon Chat block.
 function buildIcs({ schedule, users, roles, username, calendarName }) {
   const dtstamp = icsUtcStamp(new Date());
   const userByName = {};
@@ -656,25 +663,39 @@ function buildIcs({ schedule, users, roles, username, calendarName }) {
     const week = schedule[weekKey] || {};
     DAYS.forEach((d, dayIndex) => {
       const dayMap = week[d.id] || {};
+      const day = addDays(weekStart, dayIndex);
+      // Bucket assignments into (user, role) -> set of hours for this day.
+      // Then sort each bucket and collapse contiguous hours into runs.
+      const buckets = new Map();
       Object.keys(dayMap).forEach(hourStr => {
         const hour = Number(hourStr);
         if (!Number.isFinite(hour)) return;
-        const assigns = dayMap[hourStr] || [];
-        assigns.forEach(a => {
+        (dayMap[hourStr] || []).forEach(a => {
           if (!a || !a.username) return;
           if (username && a.username.toLowerCase() !== username.toLowerCase()) return;
-          const u = userByName[a.username.toLowerCase()];
-          const r = roleById[a.role];
-          events.push(buildHourEvent({
-            assignUser: a.username,
-            displayName: u ? (u.displayName || u.username) : a.username,
-            day: addDays(weekStart, dayIndex),
-            hour,
-            role: a.role,
-            roleLabel: r ? r.label : a.role,
-            dtstamp,
-          }));
+          const key = `${a.username.toLowerCase()}|${a.role || ""}`;
+          let b = buckets.get(key);
+          if (!b) { b = { username: a.username, role: a.role || "", hours: new Set() }; buckets.set(key, b); }
+          b.hours.add(hour);
         });
+      });
+      buckets.forEach(b => {
+        const sorted = Array.from(b.hours).sort((x, y) => x - y);
+        if (sorted.length === 0) return;
+        const u = userByName[b.username.toLowerCase()];
+        const r = roleById[b.role];
+        const display = u ? (u.displayName || u.username) : b.username;
+        const roleLabel = r ? r.label : b.role;
+        let runStart = sorted[0], runEnd = sorted[0];
+        for (let i = 1; i < sorted.length; i++) {
+          if (sorted[i] === runEnd + 1) {
+            runEnd = sorted[i];
+          } else {
+            events.push(buildRunEvent({ assignUser: b.username, displayName: display, day, startHour: runStart, endHour: runEnd, role: b.role, roleLabel, dtstamp }));
+            runStart = sorted[i]; runEnd = sorted[i];
+          }
+        }
+        events.push(buildRunEvent({ assignUser: b.username, displayName: display, day, startHour: runStart, endHour: runEnd, role: b.role, roleLabel, dtstamp }));
       });
     });
   });
