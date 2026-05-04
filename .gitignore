@@ -1,0 +1,6 @@
+# macOS clutter
+.DS_Store
+
+# Favicon source bundle (generated set is copied to project root)
+favicon/
+favicon.zip
