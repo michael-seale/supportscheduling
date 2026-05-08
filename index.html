@@ -189,6 +189,7 @@ function getNeed(needs, roleId, hour) {
 // The shared users list and schedule live in the remote JSON bin below.
 const LS_KEYS = {
   session: "sched.session.v1",
+  displayTz: "sched.displayTz.v1",
 };
 
 function loadJSON(key, fallback) {
@@ -283,11 +284,65 @@ async function putRemote(state) {
 }
 
 function formatHour(h) {
-  const suffix = h >= 12 ? "pm" : "am";
-  const disp = ((h + 11) % 12) + 1;
+  // Wrap into 0-23 so display TZ shifts that push hours below 0 or past 23
+  // (e.g. 7pm ET → 8pm AT, 7am ET → 4am PT) still render as a normal clock time.
+  const wrapped = ((h % 24) + 24) % 24;
+  const suffix = wrapped >= 12 ? "pm" : "am";
+  const disp = ((wrapped + 11) % 12) + 1;
   return `${disp}${suffix}`;
 }
 function hourRangeLabel(h) { return `${formatHour(h)}–${formatHour(h + 1)}`; }
+
+// ---------------------------------------------------------------------------
+// Display timezone preference
+//
+// All schedule data in the bin is keyed by Eastern hour (an integer 7–19).
+// The "display TZ" lets each browser shift how those hours are LABELED in
+// the UI without changing the underlying data, ICS exports, or shift
+// definitions. Stored per-browser in localStorage.
+// ---------------------------------------------------------------------------
+const TIMEZONES = [
+  { id: "atlantic", label: "Atlantic", short: "AT", etOffset:  1 },
+  { id: "eastern",  label: "Eastern",  short: "ET", etOffset:  0 },
+  { id: "central",  label: "Central",  short: "CT", etOffset: -1 },
+  { id: "mountain", label: "Mountain", short: "MT", etOffset: -2 },
+  { id: "pacific",  label: "Pacific",  short: "PT", etOffset: -3 },
+];
+const TZ_BY_ID = Object.fromEntries(TIMEZONES.map(t => [t.id, t]));
+const DEFAULT_DISPLAY_TZ_ID = "eastern";
+
+const DisplayTzContext = React.createContext(null);
+
+function DisplayTzProvider({ children }) {
+  const [displayTzId, setDisplayTzIdState] = useState(() => {
+    const saved = loadJSON(LS_KEYS.displayTz, DEFAULT_DISPLAY_TZ_ID);
+    return TZ_BY_ID[saved] ? saved : DEFAULT_DISPLAY_TZ_ID;
+  });
+  const tz = TZ_BY_ID[displayTzId] || TZ_BY_ID[DEFAULT_DISPLAY_TZ_ID];
+  const offset = tz.etOffset;
+  function setDisplayTzId(id) {
+    if (!TZ_BY_ID[id]) return;
+    setDisplayTzIdState(id);
+    saveJSON(LS_KEYS.displayTz, id);
+  }
+  // Bind formatHour / hourRangeLabel to the current offset so component code
+  // can call T.formatHour(h) without ever thinking about the shift.
+  const value = React.useMemo(() => ({
+    tzId: displayTzId,
+    tz,
+    offset,
+    setDisplayTzId,
+    formatHour: (h) => formatHour(h + offset),
+    hourRangeLabel: (h) => `${formatHour(h + offset)}–${formatHour(h + 1 + offset)}`,
+  }), [displayTzId, tz, offset]);
+  return <DisplayTzContext.Provider value={value}>{children}</DisplayTzContext.Provider>;
+}
+
+function useDisplayTz() {
+  const ctx = React.useContext(DisplayTzContext);
+  if (!ctx) throw new Error("useDisplayTz must be used inside DisplayTzProvider");
+  return ctx;
+}
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -990,10 +1045,11 @@ function LoginView({ onLogin }) {
 
 function ScheduleGrid({ schedule, setSchedule, employees }) {
   const [editing, setEditing] = useState(null); // { dayId, hour, role }
+  const { hourRangeLabel, tz } = useDisplayTz();
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
       <div className="grid" style={{ gridTemplateColumns: "90px repeat(5, minmax(0, 1fr))" }}>
-        <div className="bg-slate-100 border-b border-slate-200 p-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">Time (ET)</div>
+        <div className="bg-slate-100 border-b border-slate-200 p-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">Time ({tz.short})</div>
         {DAYS.map(d => (
           <div key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</div>
         ))}
@@ -1028,6 +1084,7 @@ function ScheduleGrid({ schedule, setSchedule, employees }) {
 
 function DailyScheduleView({ schedule, setSchedule, employees }) {
   const { roles, rolesById, coverageRoles, needs } = useShared();
+  const { formatHour, hourRangeLabel } = useDisplayTz();
   const [dayId, setDayId] = useState("mon");
   const [editing, setEditing] = useState(null); // { hour, role } for needs-pill modal
   const [copyOpen, setCopyOpen] = useState(false);
@@ -1560,6 +1617,7 @@ function ScheduleCell({ dayId, hour, assignments, onEditRole }) {
 
 function RoleAssignModal({ dayId, hour, role, schedule, employees, onClose, onSave }) {
   const { rolesById, needs } = useShared();
+  const { hourRangeLabel } = useDisplayTz();
   const existing = getCellAssignments(schedule, dayId, hour);
   const currentForRole = existing.filter(a => a.role === role).map(a => a.username);
   const [selected, setSelected] = useState(() => new Set(currentForRole));
@@ -1844,12 +1902,25 @@ function TabButton({ active, onClick, children }) {
 }
 
 function TopBar({ session, onLogout, title }) {
+  const { tzId, setDisplayTzId } = useDisplayTz();
   return (
     <div className="bg-white border-b border-slate-200">
       <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
         <div className="font-brand text-xl font-bold text-slate-900">RenewedVision Support</div>
         <div className="text-sm text-slate-600 flex items-center gap-3">
           <ConnectionBadge />
+          <label className="flex items-center gap-1 text-xs text-slate-600" title="Pick the timezone you want shift times displayed in. Schedule data is always stored in Eastern Time.">
+            <span className="text-slate-500">Times in</span>
+            <select
+              value={tzId}
+              onChange={e => setDisplayTzId(e.target.value)}
+              className="border border-slate-300 rounded-md px-1.5 py-0.5 text-xs bg-white"
+            >
+              {TIMEZONES.map(t => (
+                <option key={t.id} value={t.id}>{t.label} ({t.short})</option>
+              ))}
+            </select>
+          </label>
           <span>Signed in as <span className="font-medium">{session.username}</span></span>
           <button onClick={onLogout} className="text-sm text-blue-600 hover:text-blue-800">Sign out</button>
         </div>
@@ -2327,6 +2398,7 @@ function RolesTab() {
 // flow through setNeeds, which persists to the shared JSON bin.
 function CoverageNeedsEditor() {
   const { coverageRoles, needs, setNeeds } = useShared();
+  const { hourRangeLabel } = useDisplayTz();
   const [collapsed, setCollapsed] = useState(true);
 
   function updateNeed(roleId, hour, rawValue) {
@@ -2717,6 +2789,7 @@ function AdminApp({ session, onLogout }) {
 
 function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewUsername }) {
   const { rolesById, roles } = useShared();
+  const { hourRangeLabel, tz } = useDisplayTz();
   const [viewerView, setViewerView] = useState("week");
   const [viewerDayId, setViewerDayId] = useState("mon");
   const [showEveryone, setShowEveryone] = useState(false);
@@ -2841,7 +2914,7 @@ function AdminScheduleViewer({ schedule, employees, previewUsername, setPreviewU
               <thead className="bg-slate-50 text-left text-slate-600 text-xs uppercase">
                 <tr>
                   <th className="px-4 py-2">Day</th>
-                  <th className="px-4 py-2">Time (ET)</th>
+                  <th className="px-4 py-2">Time ({tz.short})</th>
                   <th className="px-4 py-2">Role</th>
                 </tr>
               </thead>
@@ -2907,6 +2980,7 @@ function buildEmployeeWeekPlan(schedule, username, shiftId) {
 
 function EmployeeGrid({ schedule, username, shiftId }) {
   const { rolesById } = useShared();
+  const { formatHour, hourRangeLabel, tz } = useDisplayTz();
   const resolvedShift = shiftId || DEFAULT_SHIFT_ID;
   const plan = buildEmployeeWeekPlan(schedule, username, resolvedShift);
   return (
@@ -2914,7 +2988,7 @@ function EmployeeGrid({ schedule, username, shiftId }) {
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr>
-            <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-[90px]">Time (ET)</th>
+            <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-[90px]">Time ({tz.short})</th>
             {DAYS.map(d => (
               <th key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</th>
             ))}
@@ -2975,6 +3049,7 @@ function EmployeeGrid({ schedule, username, shiftId }) {
 
 function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
   const { rolesById } = useShared();
+  const { formatHour, hourRangeLabel } = useDisplayTz();
   const resolvedShift = shiftId || DEFAULT_SHIFT_ID;
   // Build runs across HOURS for this employee/day, merging same-role hours and
   // off-shift hours separately.
@@ -3091,6 +3166,7 @@ function EmployeeDayStrip({ schedule, username, shiftId, dayId, setDayId }) {
 // view when the "Show everyone" toggle is on.
 function TeamWeekGrid({ schedule, users, highlightUsername }) {
   const { rolesById } = useShared();
+  const { hourRangeLabel, tz } = useDisplayTz();
   // Precompute per-cell assignments decorated with display names.
   const cells = useMemo(() => {
     const nameByUsername = {};
@@ -3121,7 +3197,7 @@ function TeamWeekGrid({ schedule, users, highlightUsername }) {
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr>
-            <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-[90px]">Time (ET)</th>
+            <th className="bg-slate-100 border-b border-slate-200 p-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-[90px]">Time ({tz.short})</th>
             {DAYS.map(d => (
               <th key={d.id} className="bg-slate-100 border-b border-l border-slate-200 p-2 text-sm font-semibold text-slate-700">{d.label}</th>
             ))}
@@ -3177,6 +3253,7 @@ function TeamWeekGrid({ schedule, users, highlightUsername }) {
 // section and without the role-picker dropdowns. Used for "Show Everyone" on
 // the Employee view and the Schedule Viewer.
 function TeamDailyGrid({ schedule, users, highlightUsername }) {
+  const { formatHour, hourRangeLabel } = useDisplayTz();
   const { rolesById } = useShared();
   const [dayId, setDayId] = useState("mon");
   const dayLabel = (DAYS.find(d => d.id === dayId) || {}).label;
@@ -3335,6 +3412,7 @@ function TeamDailyGrid({ schedule, users, highlightUsername }) {
 
 function EmployeeApp({ session, onLogout }) {
   const { users, roles, schedule: fullSchedule, rolesById } = useShared();
+  const { tz, formatHour } = useDisplayTz();
   const [weekStart, setWeekStart] = useState(() => getMondayOf(new Date()));
   const [showEveryone, setShowEveryone] = useState(true);
   const [viewerView, setViewerView] = useState("day");
@@ -3374,7 +3452,7 @@ function EmployeeApp({ session, onLogout }) {
         <div className="mb-4 flex items-end justify-between gap-3 flex-wrap">
           <div>
             <h2 className="text-xl font-semibold text-slate-800">{weekLabel}</h2>
-            <p className="text-sm text-slate-500">Monday–Friday, 7am–8pm ET · times shown in Eastern Time</p>
+            <p className="text-sm text-slate-500">Monday–Friday, {formatHour(7)}–{formatHour(20)} {tz.short} · times shown in {tz.label} Time</p>
           </div>
           <div className="flex items-center gap-3 flex-wrap justify-end">
             <span className="text-sm text-slate-600">{myShifts.length} shift{myShifts.length === 1 ? "" : "s"} assigned</span>
@@ -3537,9 +3615,11 @@ function AppInner() {
 function App() {
   if (!isJsonbinConfigured()) return <SetupView />;
   return (
-    <SharedStateProvider>
-      <AppInner />
-    </SharedStateProvider>
+    <DisplayTzProvider>
+      <SharedStateProvider>
+        <AppInner />
+      </SharedStateProvider>
+    </DisplayTzProvider>
   );
 }
 
